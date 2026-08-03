@@ -1,0 +1,31 @@
+# Dockerfile pour le serveur Mediasoup
+FROM node:18
+
+# Installer les dépendances système pour Mediasoup
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3 \
+    python3-pip \
+    net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copier les fichiers de dépendances
+COPY package*.json ./
+
+# Installer les dépendances (inclut mediasoup)
+RUN npm ci --only=production
+
+# Copier le serveur Mediasoup
+COPY server-mediasoup.js ./
+
+# Exposer les ports
+EXPOSE 3001
+EXPOSE 10000-10100/udp
+
+# Variables d'environnement
+ENV NODE_ENV=production
+ENV MEDIASOUP_PORT=3001
+
+CMD ["node", "server-mediasoup.js"]

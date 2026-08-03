@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink-950: #0e1116;
+  --ink-900: #161b23;
+  --signal-500: #ff5a36;
+}
+
+html,
+body {
+  background: var(--ink-950);
+  color: #eef0f4;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

@@ -1,0 +1,38 @@
+services:
+  nextjs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - NEXT_PUBLIC_MEDIASOUP_URL=${NEXT_PUBLIC_MEDIASOUP_URL}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+    depends_on:
+      - mediasoup
+    restart: unless-stopped
+    networks:
+      - stark-meet-network
+
+  mediasoup:
+    build:
+      context: .
+      dockerfile: Dockerfile.mediasoup
+    ports:
+      - "3001:3001"
+      - "10000-10100:10000-10100/udp"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - CLIENT_URL=${NEXT_PUBLIC_APP_URL}
+      - MEDIASOUP_ANNOUNCED_IP=${MEDIASOUP_ANNOUNCED_IP}
+    restart: unless-stopped
+    networks:
+      - stark-meet-network
+
+networks:
+  stark-meet-network:
+    driver: bridge
