@@ -10,6 +10,8 @@
 
 html,
 body {
+  height: 100%;
+  margin: 0;
   background: var(--ink-950);
   color: #eef0f4;
 }
