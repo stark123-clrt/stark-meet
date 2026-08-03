@@ -9,17 +9,39 @@ import {
   PhoneOff,
   Monitor,
   MonitorOff,
-  MessageSquare,
-  Users,
+  Hand,
   Lock,
   LockOpen,
   Settings,
+  Copy,
+  Check,
+  Users,
 } from 'lucide-react';
 import VideoGrid from './VideoGrid';
-import ParticipantsList from './ParticipantsList';
-import ChatPanel from './ChatPanel';
+import SidePanel from './SidePanel';
 import DeviceSelector from './DeviceSelector';
 import useMediasoup from '@/hooks/useMediasoup';
+
+function formatElapsed(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+function ctrlClass(on, danger = false) {
+  const base = 'w-12 h-12 sm:w-[52px] sm:h-[52px] rounded-full flex items-center justify-center transition-colors flex-none';
+  if (!on && danger) return `${base} bg-danger-500/15 border border-danger-500/45 text-danger-500`;
+  return `${base} bg-white/[0.07] text-mist-300 hover:bg-white/[0.13] hover:text-white`;
+}
+
+function accentCtrlClass(active) {
+  const base = 'w-12 h-12 sm:w-[52px] sm:h-[52px] rounded-full flex items-center justify-center transition-colors flex-none';
+  return active
+    ? `${base} bg-amber-500/15 border border-amber-500/45 text-amber-500`
+    : `${base} bg-white/[0.07] text-mist-300 hover:bg-white/[0.13] hover:text-white`;
+}
 
 export default function ConferenceView({
   meeting,
@@ -35,10 +57,12 @@ export default function ConferenceView({
   onForceMute,
   onRemove,
 }) {
-  const [showParticipants, setShowParticipants] = useState(false);
-  const [showChat, setShowChat] = useState(false);
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
   const [showDeviceSelector, setShowDeviceSelector] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const hasJoinedRef = useRef(false);
+  const joinedAtRef = useRef(null);
 
   const {
     localStream,
@@ -48,11 +72,14 @@ export default function ConferenceView({
     isVideoOn,
     isConnected,
     isScreenSharing,
+    isHandRaised,
+    raisedHands,
     error,
     joinMeeting,
     leaveMeeting,
     toggleMic,
     toggleVideo,
+    toggleHand,
     startScreenShare,
     stopScreenShare,
   } = useMediasoup(meeting?.id, currentUserId, currentUserName);
@@ -64,6 +91,15 @@ export default function ConferenceView({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId, meeting?.id]);
+
+  useEffect(() => {
+    if (isConnected && !joinedAtRef.current) joinedAtRef.current = Date.now();
+    if (!isConnected) return;
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - joinedAtRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isConnected]);
 
   // Ne montrer dans le panneau participants que ceux réellement connectés
   // à Mediasoup en ce moment (+ moi-même) — une ligne "admitted" en base
@@ -95,34 +131,53 @@ export default function ConferenceView({
     await onLeaveMeeting?.();
   };
 
+  const copyCode = () => {
+    navigator.clipboard.writeText(meeting?.meeting_code || '');
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   const isLocked = !!meeting?.locked_at;
   const waitingCount = waitingParticipants?.length || 0;
+  const totalCount = connectedParticipants.length + waitingCount;
+  const initials = (currentUserName || '?').trim().slice(0, 2).toUpperCase();
 
   return (
-    <div className="flex flex-col h-full w-full bg-ink-950">
-      <header className="flex items-center justify-between px-5 py-3 bg-ink-900 border-b border-ink-700">
-        <div className="flex items-center gap-3 min-w-0">
-          <h1 className="text-white text-sm font-semibold truncate">{meeting?.title || 'Réunion'}</h1>
-          <span className="text-ink-500 font-mono text-xs hidden sm:inline">{meeting?.meeting_code}</span>
-          {isConnected && (
-            <span className="flex items-center gap-1.5 text-ok-500 text-[11px] font-mono uppercase tracking-wide">
-              <span className="w-1.5 h-1.5 bg-ok-500 rounded-full" />
-              En direct
-            </span>
-          )}
+    <div className="flex flex-col h-full w-full bg-ink-950 overflow-hidden">
+      <header className="flex-none flex items-center justify-between gap-3 px-3 sm:px-6 h-[60px] bg-ink-900 border-b border-ink-700">
+        <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+          <div className="hidden sm:flex items-center gap-2 font-mono font-bold text-[13.5px] tracking-wide text-white flex-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-signal-500 inline-block" />
+            STARK MEET
+          </div>
+          <span className="hidden sm:block w-px h-6 bg-ink-700 flex-none" />
+          <span className="text-[14.5px] font-semibold text-white truncate">{meeting?.title || 'Réunion'}</span>
+          <button
+            onClick={copyCode}
+            className="flex items-center gap-1.5 font-mono text-[11.5px] text-mist-300 bg-white/[0.05] rounded px-2.5 py-1 hover:bg-white/[0.09] transition-colors flex-none"
+          >
+            {meeting?.meeting_code}
+            {copied ? <Check className="h-3 w-3 text-ok-500" /> : <Copy className="h-3 w-3" />}
+          </button>
         </div>
 
-        <div className="flex items-center gap-1.5">
-          {isHost && (
-            <button
-              onClick={onToggleLock}
-              className={`p-2 rounded-md transition-colors ${
-                isLocked ? 'bg-signal-500/15 text-signal-300' : 'text-ink-500 hover:text-white hover:bg-ink-800'
-              }`}
-              title={isLocked ? 'Salle verrouillée — cliquer pour déverrouiller' : 'Verrouiller la salle'}
-            >
-              {isLocked ? <Lock className="h-4 w-4" /> : <LockOpen className="h-4 w-4" />}
-            </button>
+        <div className="flex items-center gap-2 sm:gap-3.5 flex-none">
+          {isConnected && (
+            <span className="hidden sm:flex items-center gap-1.5 font-mono text-[11px] font-semibold text-ok-500 bg-ok-500/10 border border-ok-500/25 rounded px-2.5 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-ok-500 inline-block" />
+              EN DIRECT
+            </span>
+          )}
+          {isConnected && (
+            <span className="hidden md:inline font-mono text-[13px] text-mist-300 tabular-nums">
+              {formatElapsed(elapsed)}
+            </span>
+          )}
+          {isLocked && (
+            <span className="hidden lg:flex items-center gap-1.5 font-mono text-[11px] font-semibold text-amber-500 bg-amber-500/10 border border-amber-500/28 rounded px-2.5 py-1">
+              <Lock className="h-3 w-3" />
+              SALLE VERROUILLÉE
+            </span>
           )}
           <button
             onClick={() => setShowDeviceSelector(true)}
@@ -132,16 +187,9 @@ export default function ConferenceView({
             <Settings className="h-4 w-4" />
           </button>
           <button
-            onClick={() => setShowChat(!showChat)}
-            className={`p-2 rounded-md transition-colors ${showChat ? 'bg-ink-800 text-white' : 'text-ink-500 hover:text-white hover:bg-ink-800'}`}
-            title="Discussion"
-          >
-            <MessageSquare className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setShowParticipants(!showParticipants)}
-            className={`relative p-2 rounded-md transition-colors ${showParticipants ? 'bg-ink-800 text-white' : 'text-ink-500 hover:text-white hover:bg-ink-800'}`}
-            title="Participants"
+            onClick={() => setMobilePanelOpen(true)}
+            className="lg:hidden relative p-2 rounded-md text-ink-500 hover:text-white hover:bg-ink-800 transition-colors"
+            title="Participants et discussion"
           >
             <Users className="h-4 w-4" />
             {waitingCount > 0 && (
@@ -154,97 +202,106 @@ export default function ConferenceView({
       </header>
 
       {error && (
-        <div className="bg-signal-500/10 border-b border-signal-500/20 text-signal-300 px-5 py-2 text-sm">
+        <div className="flex-none bg-signal-500/10 border-b border-signal-500/20 text-signal-300 px-5 py-2 text-sm">
           {error}
         </div>
       )}
 
       <div className="flex-1 flex min-h-0">
-        <main className="flex-1 relative overflow-hidden">
-          {currentUserId ? (
-            <VideoGrid
-              participants={participants}
-              remotePeers={remotePeers}
-              localStream={localStream}
-              remoteStreams={remoteStreams}
-              currentUserId={currentUserId}
-              onToggleMic={toggleMic}
-              onToggleVideo={toggleVideo}
-              isMicOn={isMicOn}
-              isVideoOn={isVideoOn}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full text-ink-500">Chargement…</div>
-          )}
+        {currentUserId ? (
+          <VideoGrid
+            participants={participants}
+            remotePeers={remotePeers}
+            localStream={localStream}
+            remoteStreams={remoteStreams}
+            currentUserId={currentUserId}
+            isMicOn={isMicOn}
+            isVideoOn={isVideoOn}
+            raisedHands={raisedHands}
+          />
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-ink-500">Chargement…</div>
+        )}
 
-          {showParticipants && (
-            <ParticipantsList
-              onClose={() => setShowParticipants(false)}
-              participants={connectedParticipants}
-              waitingParticipants={waitingParticipants}
-              isHost={isHost}
-              onAdmit={onAdmit}
-              onDeny={onDeny}
-              onForceMute={onForceMute}
-              onRemove={onRemove}
-            />
-          )}
-
-          {showDeviceSelector && <DeviceSelector onClose={() => setShowDeviceSelector(false)} />}
-        </main>
-
-        <ChatPanel
+        <SidePanel
           meetingId={meeting?.id}
           currentUserId={currentUserId}
           currentUserName={currentUserName}
-          isOpen={showChat}
-          onClose={() => setShowChat(false)}
+          isHost={isHost}
+          participants={connectedParticipants}
+          waitingParticipants={waitingParticipants}
+          onAdmit={onAdmit}
+          onDeny={onDeny}
+          onForceMute={onForceMute}
+          onRemove={onRemove}
+          mobileOpen={mobilePanelOpen}
+          onCloseMobile={() => setMobilePanelOpen(false)}
         />
       </div>
 
-      <footer className="flex items-center justify-center gap-2.5 px-4 py-3 bg-ink-900 border-t border-ink-700">
-        <button
-          onClick={toggleMic}
-          disabled={isForceMuted}
-          title={isForceMuted ? "Micro coupé par l'hôte" : undefined}
-          className={`flex flex-col items-center gap-1 w-16 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-            isMicOn ? 'bg-ink-800 text-mist-300 hover:text-white' : 'bg-signal-500 text-white'
-          }`}
-        >
-          {isMicOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-          <span className="text-[10px] font-medium">{isForceMuted ? 'Coupé' : isMicOn ? 'Micro' : 'Muet'}</span>
-        </button>
+      {showDeviceSelector && <DeviceSelector onClose={() => setShowDeviceSelector(false)} />}
 
-        <button
-          onClick={toggleVideo}
-          disabled={isScreenSharing}
-          className={`flex flex-col items-center gap-1 w-16 py-2 rounded-lg transition-colors disabled:opacity-40 ${
-            isVideoOn ? 'bg-ink-800 text-mist-300 hover:text-white' : 'bg-signal-500 text-white'
-          }`}
-        >
-          {isVideoOn ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
-          <span className="text-[10px] font-medium">Caméra</span>
-        </button>
+      <footer className="flex-none flex items-center justify-between gap-2 px-3 sm:px-6 h-auto sm:h-[82px] py-2.5 sm:py-0 bg-ink-900 border-t border-ink-700">
+        <div className="hidden md:flex items-center gap-2.5 w-[280px] flex-none">
+          <span className="w-[30px] h-[30px] rounded-full bg-ink-800 text-white font-mono text-[11px] font-semibold flex items-center justify-center flex-none">
+            {initials}
+          </span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-[13px] text-white truncate">{currentUserName}</span>
+            <span className="font-mono text-[10.5px] text-ink-600">
+              {isHost ? 'HÔTE DE LA RÉUNION' : 'PARTICIPANT'}
+            </span>
+          </div>
+        </div>
 
-        <button
-          onClick={isScreenSharing ? stopScreenShare : startScreenShare}
-          className={`flex flex-col items-center gap-1 w-16 py-2 rounded-lg transition-colors ${
-            isScreenSharing ? 'bg-signal-500 text-white' : 'bg-ink-800 text-mist-300 hover:text-white'
-          }`}
-        >
-          {isScreenSharing ? <MonitorOff className="h-4 w-4" /> : <Monitor className="h-4 w-4" />}
-          <span className="text-[10px] font-medium">Partager</span>
-        </button>
+        <div className="flex-1 md:flex-none flex items-center justify-center gap-2 sm:gap-3 overflow-x-auto scrollbar-hide">
+          <button
+            onClick={toggleMic}
+            disabled={isForceMuted}
+            title={isForceMuted ? "Micro coupé par l'hôte" : 'Micro'}
+            className={`${ctrlClass(isMicOn, true)} disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+          </button>
 
-        <div className="w-px h-8 bg-ink-700 mx-1" />
+          <button onClick={toggleVideo} disabled={isScreenSharing} title="Caméra" className={`${ctrlClass(isVideoOn, true)} disabled:opacity-40`}>
+            {isVideoOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+          </button>
 
-        <button
-          onClick={handleLeave}
-          className="flex flex-col items-center gap-1 w-16 py-2 rounded-lg bg-signal-500 hover:bg-signal-400 text-white transition-colors"
-        >
-          <PhoneOff className="h-4 w-4" />
-          <span className="text-[10px] font-medium">Quitter</span>
-        </button>
+          <button
+            onClick={isScreenSharing ? stopScreenShare : startScreenShare}
+            title="Partager l'écran"
+            className={isScreenSharing ? accentCtrlClass(true) : ctrlClass(true)}
+          >
+            {isScreenSharing ? <MonitorOff className="h-5 w-5" /> : <Monitor className="h-5 w-5" />}
+          </button>
+
+          <button onClick={toggleHand} title="Lever la main" className={accentCtrlClass(isHandRaised)}>
+            <Hand className="h-5 w-5" />
+          </button>
+
+          {isHost && (
+            <button
+              onClick={onToggleLock}
+              title={isLocked ? 'Verrouillée — cliquer pour déverrouiller' : 'Verrouiller la salle'}
+              className={accentCtrlClass(isLocked)}
+            >
+              {isLocked ? <Lock className="h-5 w-5" /> : <LockOpen className="h-5 w-5" />}
+            </button>
+          )}
+
+          <span className="w-px h-8 bg-ink-700 mx-1 flex-none" />
+
+          <button
+            onClick={handleLeave}
+            className="flex-none flex items-center gap-2 h-12 sm:h-[52px] px-4 sm:px-[22px] rounded-full bg-signal-500 hover:bg-signal-600 text-white text-[13.5px] font-semibold transition-colors"
+          >
+            <PhoneOff className="h-4 w-4" />
+            <span className="hidden sm:inline">Quitter</span>
+          </button>
+        </div>
+
+        <div className="hidden md:block w-[280px] flex-none" />
       </footer>
     </div>
   );

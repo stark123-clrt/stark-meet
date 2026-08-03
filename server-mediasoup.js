@@ -395,6 +395,13 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Lever/baisser la main — signal éphémère, pas de persistance en base,
+  // juste un relais aux autres participants de la salle.
+  socket.on('toggle-hand', ({ raised }) => {
+    if (!socket.meetingId) return;
+    socket.to(socket.meetingId).emit('hand-toggled', { peerId: socket.id, userId: socket.userId, raised });
+  });
+
   // Quitter volontairement la salle (l'utilisateur clique "Quitter", ou est
   // exclu par l'hôte côté application) sans fermer la connexion Socket.io —
   // permet au client de revenir à l'écran de salle d'attente proprement.

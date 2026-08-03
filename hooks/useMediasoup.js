@@ -20,6 +20,8 @@ export default function useMediasoup(meetingId, userId, userName) {
   const [error, setError] = useState(null);
   const [remotePeers, setRemotePeers] = useState({}); // peerId -> { peerId, name, userId }
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isHandRaised, setIsHandRaised] = useState(false);
+  const [raisedHands, setRaisedHands] = useState({}); // userId -> bool (participants distants)
 
   // Refs (persistent across renders)
   const socketRef = useRef(null);
@@ -64,6 +66,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       socketRef.current.on('producer-closed', handleProducerClosed);
       socketRef.current.on('peer-joined', handlePeerJoined);
       socketRef.current.on('peer-left', handlePeerLeft);
+      socketRef.current.on('hand-toggled', handleHandToggled);
     });
   }, []);
 
@@ -396,6 +399,8 @@ export default function useMediasoup(meetingId, userId, userName) {
   const handlePeerLeft = useCallback(({ peerId }) => {
     console.log(`👋 Participant ${peerId} est parti`);
 
+    const leavingPeer = peersRef.current.get(peerId);
+
     // Supprimer le stream distant
     setRemoteStreams(prev => {
       const newStreams = { ...prev };
@@ -411,12 +416,40 @@ export default function useMediasoup(meetingId, userId, userName) {
       return updated;
     });
 
+    if (leavingPeer?.userId) {
+      setRaisedHands(prev => {
+        const updated = { ...prev };
+        delete updated[leavingPeer.userId];
+        return updated;
+      });
+    }
+
     // Fermer le transport de consommation
     const transport = consumerTransportsRef.current.get(peerId);
     if (transport) {
       transport.close();
       consumerTransportsRef.current.delete(peerId);
     }
+  }, []);
+
+  /**
+   * Gérer le lever/baisser de main d'un participant distant
+   */
+  const handleHandToggled = useCallback(({ userId, raised }) => {
+    if (!userId) return;
+    setRaisedHands(prev => ({ ...prev, [userId]: raised }));
+  }, []);
+
+  /**
+   * Lever/baisser ma propre main — signal éphémère relayé aux autres via
+   * Mediasoup (pas de persistance en base, comme le mic/la caméra).
+   */
+  const toggleHand = useCallback(() => {
+    setIsHandRaised(prev => {
+      const next = !prev;
+      socketRef.current?.emit('toggle-hand', { raised: next });
+      return next;
+    });
   }, []);
 
   /**
@@ -569,6 +602,8 @@ export default function useMediasoup(meetingId, userId, userName) {
     // Réinitialiser les états
     setRemoteStreams({});
     setIsConnected(false);
+    setIsHandRaised(false);
+    setRaisedHands({});
     peersRef.current.clear();
   }, [localStream]);
 
@@ -782,11 +817,14 @@ export default function useMediasoup(meetingId, userId, userName) {
     isVideoOn,
     isConnected,
     isScreenSharing,
+    isHandRaised,
+    raisedHands,
     error,
     joinMeeting,
     leaveMeeting,
     toggleMic,
     toggleVideo,
+    toggleHand,
     startScreenShare,
     stopScreenShare,
   };

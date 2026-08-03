@@ -1,14 +1,14 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { User } from 'lucide-react';
 import VideoCard from './VideoCard';
 
 /**
- * VideoGrid — grille des vidéos : ma tuile + celles des participants
- * distants. Le nom/rôle de chaque participant distant est retrouvé via
- * `remotePeers` (userId transmis par mediasoup) croisé avec la liste des
- * participants de la réunion (Supabase).
+ * VideoGrid — scène principale (le participant "à l'écran") + bandeau de
+ * vignettes cliquables en dessous pour changer qui est mis en avant.
+ * Reproduit la mise en page du template Claude Design (spotlight + filmstrip)
+ * plutôt qu'une grille uniforme.
  */
 export default function VideoGrid({
   participants,
@@ -16,75 +16,114 @@ export default function VideoGrid({
   localStream,
   remoteStreams,
   currentUserId,
-  onToggleMic,
-  onToggleVideo,
   isMicOn,
   isVideoOn,
+  raisedHands,
 }) {
-  const currentUserData = useMemo(() => {
-    if (!localStream || !currentUserId) return null;
+  const findParticipant = (userId) =>
+    participants?.find((p) => p.profile_id === userId || p.guest_id === userId);
 
-    const currentParticipant = participants?.find(p => p.profile_id === currentUserId || p.guest_id === currentUserId);
-    if (!currentParticipant) return null;
+  const tiles = useMemo(() => {
+    const list = [];
 
-    return {
-      participant: {
-        id: currentParticipant.id,
-        name: currentParticipant.display_name || 'Vous',
-        role: currentParticipant.role,
-      },
-      stream: localStream,
-    };
-  }, [participants, currentUserId, localStream]);
+    const me = findParticipant(currentUserId);
+    if (localStream && currentUserId) {
+      list.push({
+        tileId: 'local',
+        participant: {
+          id: me?.id || 'local',
+          name: me?.display_name || 'Vous',
+          role: me?.role || 'guest',
+        },
+        stream: localStream,
+        isLocal: true,
+        handRaised: !!raisedHands?.[currentUserId],
+      });
+    }
 
-  const remoteParticipantsData = Object.entries(remoteStreams).map(([peerId, stream]) => {
-    const peerInfo = remotePeers?.[peerId];
-    const matchedParticipant = peerInfo?.userId
-      ? participants?.find(p => p.profile_id === peerInfo.userId || p.guest_id === peerInfo.userId)
-      : null;
+    Object.entries(remoteStreams || {}).forEach(([peerId, stream]) => {
+      const peerInfo = remotePeers?.[peerId];
+      const matched = peerInfo?.userId ? findParticipant(peerInfo.userId) : null;
+      list.push({
+        tileId: peerId,
+        participant: {
+          id: peerId,
+          name: matched?.display_name || peerInfo?.name || 'Participant',
+          role: matched?.role || 'guest',
+        },
+        stream,
+        isLocal: false,
+        handRaised: !!raisedHands?.[peerInfo?.userId],
+      });
+    });
 
-    return {
-      participant: {
-        id: peerId,
-        name: matchedParticipant?.display_name || peerInfo?.name || 'Participant',
-        role: matchedParticipant?.role || 'guest',
-      },
-      stream,
-    };
-  });
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participants, remotePeers, remoteStreams, localStream, currentUserId, raisedHands]);
+
+  const [activeId, setActiveId] = useState(null);
+
+  useEffect(() => {
+    if (tiles.length === 0) return;
+    if (!tiles.some((t) => t.tileId === activeId)) {
+      const firstRemote = tiles.find((t) => !t.isLocal);
+      setActiveId((firstRemote || tiles[0]).tileId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tiles]);
+
+  const active = tiles.find((t) => t.tileId === activeId) || tiles[0];
+  const remoteCount = tiles.filter((t) => !t.isLocal).length;
+
+  if (!active) {
+    return (
+      <div className="flex-1 flex items-center justify-center h-full">
+        <div className="text-center">
+          <div className="w-16 h-16 rounded-full bg-ink-800 flex items-center justify-center mx-auto mb-4 border border-ink-700">
+            <User className="h-7 w-7 text-ink-500" />
+          </div>
+          <p className="text-mist-300 text-base font-medium">Connexion à la réunion…</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="h-full w-full overflow-y-auto scrollbar-hide bg-ink-950">
-      <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        {currentUserData && (
-          <div key={currentUserData.participant.id || 'local'} className="relative min-h-[190px]">
-            <VideoCard
-              participant={currentUserData.participant}
-              stream={currentUserData.stream}
-              isLocal={true}
-              micEnabled={isMicOn}
-              videoEnabled={isVideoOn}
-              onToggleMic={onToggleMic}
-              onToggleVideo={onToggleVideo}
-            />
-          </div>
-        )}
-        {remoteParticipantsData.map((data) => (
-          <div key={data.participant.id} className="relative min-h-[190px]">
-            <VideoCard participant={data.participant} stream={data.stream} isLocal={false} />
-          </div>
-        ))}
+    <div className="flex-1 flex flex-col min-h-0 pt-3 sm:pt-5 px-3 sm:px-5">
+      <div className="flex-1 min-h-0">
+        <VideoCard
+          key={active.tileId}
+          variant="stage"
+          participant={active.participant}
+          stream={active.stream}
+          isLocal={active.isLocal}
+          videoEnabled={active.isLocal ? isVideoOn : true}
+          micEnabled={active.isLocal ? isMicOn : true}
+        />
       </div>
 
-      {remoteParticipantsData.length === 0 && (
-        <div className="flex items-center justify-center py-16">
-          <div className="text-center">
-            <div className="w-16 h-16 rounded-full bg-ink-800 flex items-center justify-center mx-auto mb-4 border border-ink-700">
-              <User className="h-7 w-7 text-ink-500" />
-            </div>
-            <p className="text-mist-300 text-base font-medium">En attente d'autres participants…</p>
-            <p className="text-ink-500 text-sm mt-1.5">Partagez le code ou le lien de la réunion.</p>
-          </div>
+      {remoteCount > 0 && (
+        <div className="flex-none flex gap-2.5 sm:gap-3 py-3 sm:py-4 overflow-x-auto scrollbar-hide">
+          {tiles.map((t) => (
+            <VideoCard
+              key={t.tileId}
+              variant="tile"
+              participant={t.participant}
+              stream={t.stream}
+              isLocal={t.isLocal}
+              videoEnabled={t.isLocal ? isVideoOn : true}
+              micEnabled={t.isLocal ? isMicOn : true}
+              isActiveSpeaker={t.tileId === active.tileId}
+              onSelect={() => setActiveId(t.tileId)}
+            />
+          ))}
+        </div>
+      )}
+
+      {remoteCount === 0 && (
+        <div className="flex-none py-4 sm:py-5 text-center">
+          <p className="text-mist-300 text-sm font-medium">En attente d'autres participants…</p>
+          <p className="text-ink-500 text-xs mt-1">Partagez le code ou le lien de la réunion.</p>
         </div>
       )}
     </div>
