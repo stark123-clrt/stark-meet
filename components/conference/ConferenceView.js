@@ -65,6 +65,31 @@ export default function ConferenceView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId, meeting?.id]);
 
+  // Ne montrer dans le panneau participants que ceux réellement connectés
+  // à Mediasoup en ce moment (+ moi-même) — une ligne "admitted" en base
+  // reste sinon indéfiniment si quelqu'un ferme l'onglet sans cliquer
+  // "Quitter" (aucune déconnexion réseau ne met à jour son statut).
+  const connectedParticipants = (participants || []).filter((p) => {
+    const participantUserId = p.profile_id || p.guest_id;
+    if (participantUserId === currentUserId) return true;
+    return Object.values(remotePeers).some((peer) => peer.userId === participantUserId);
+  });
+
+  // Mute forcé par l'hôte : couper réellement le micro côté client dès que
+  // ma ligne passe force_muted=true (jusque-là ça ne faisait qu'afficher un
+  // badge, sans effet sur le flux audio produit).
+  const myParticipantRow = participants?.find(
+    (p) => (p.profile_id || p.guest_id) === currentUserId
+  );
+  const isForceMuted = !!myParticipantRow?.force_muted;
+
+  useEffect(() => {
+    if (isForceMuted && isMicOn) {
+      toggleMic();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isForceMuted]);
+
   const handleLeave = async () => {
     leaveMeeting();
     await onLeaveMeeting?.();
@@ -155,7 +180,7 @@ export default function ConferenceView({
           {showParticipants && (
             <ParticipantsList
               onClose={() => setShowParticipants(false)}
-              participants={participants}
+              participants={connectedParticipants}
               waitingParticipants={waitingParticipants}
               isHost={isHost}
               onAdmit={onAdmit}
@@ -180,12 +205,14 @@ export default function ConferenceView({
       <footer className="flex items-center justify-center gap-2.5 px-4 py-3 bg-ink-900 border-t border-ink-700">
         <button
           onClick={toggleMic}
-          className={`flex flex-col items-center gap-1 w-16 py-2 rounded-lg transition-colors ${
+          disabled={isForceMuted}
+          title={isForceMuted ? "Micro coupé par l'hôte" : undefined}
+          className={`flex flex-col items-center gap-1 w-16 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
             isMicOn ? 'bg-ink-800 text-mist-300 hover:text-white' : 'bg-signal-500 text-white'
           }`}
         >
           {isMicOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-          <span className="text-[10px] font-medium">{isMicOn ? 'Micro' : 'Muet'}</span>
+          <span className="text-[10px] font-medium">{isForceMuted ? 'Coupé' : isMicOn ? 'Micro' : 'Muet'}</span>
         </button>
 
         <button
