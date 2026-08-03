@@ -177,7 +177,7 @@ export default function VideoCard({
         muted={isLocal}
         className={`absolute inset-0 w-full h-full object-cover z-10 transition-opacity duration-300 ${
           isVideoActive ? 'opacity-100' : 'opacity-0'
-        }`}
+        } ${isLocal ? 'scale-x-[-1]' : ''}`}
       />
 
       {!isLocal && <audio ref={audioRef} autoPlay playsInline className="hidden" />}
