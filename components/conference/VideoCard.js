@@ -64,8 +64,11 @@ export default function VideoCard({
         setIsVideoActive(videoEnabled);
         setIsAudioActive(micEnabled);
       } else {
-        setIsVideoActive(videoTracks.length > 0 && videoTracks[0].readyState === 'live');
-        setIsAudioActive(audioTracks.length > 0 && audioTracks[0].readyState === 'live');
+        // Un flux distant coupé reste une piste `live` (le SFU met le producer
+        // en pause, il ne le ferme pas) : l'état annoncé par le serveur fait
+        // donc autorité, la piste ne sert qu'à confirmer qu'il y a du média.
+        setIsVideoActive(videoEnabled && videoTracks.length > 0 && videoTracks[0].readyState === 'live');
+        setIsAudioActive(micEnabled && audioTracks.length > 0 && audioTracks[0].readyState === 'live');
       }
     };
 
@@ -202,6 +205,11 @@ export default function VideoCard({
             <span className="text-sm sm:text-base font-semibold text-white drop-shadow">{participant?.name || 'Participant'}</span>
             {isHost && (
               <span className="font-mono text-[9px] font-bold tracking-wide text-ink-950 bg-ok-500 rounded px-1.5 py-0.5">HÔTE</span>
+            )}
+            {!isAudioActive && (
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-danger-500/20">
+                <MicOff className="h-3 w-3 text-danger-500" />
+              </span>
             )}
           </div>
         </>

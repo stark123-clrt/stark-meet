@@ -48,6 +48,7 @@ export default function ConferenceView({
   currentUserId,
   currentUserName,
   isHost,
+  roomChannel,
   participants,
   waitingParticipants,
   onLeaveMeeting,
@@ -74,10 +75,13 @@ export default function ConferenceView({
     isScreenSharing,
     isHandRaised,
     raisedHands,
+    remoteMediaState,
+    isForceMuted: isForceMutedBySignal,
     error,
     joinMeeting,
     leaveMeeting,
     toggleMic,
+    setMicEnabled,
     toggleVideo,
     toggleHand,
     startScreenShare,
@@ -91,6 +95,14 @@ export default function ConferenceView({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId, meeting?.id]);
+
+  // Libérer caméra, micro et connexion même si la vue disparaît sans passer
+  // par le bouton « Quitter » — c'est le cas quand l'hôte exclut quelqu'un :
+  // la page bascule sur l'écran d'exclusion, et sans ça la webcam de la
+  // personne restait allumée.
+  const leaveMeetingRef = useRef(leaveMeeting);
+  leaveMeetingRef.current = leaveMeeting;
+  useEffect(() => () => leaveMeetingRef.current?.(), []);
 
   useEffect(() => {
     if (isConnected && !joinedAtRef.current) joinedAtRef.current = Date.now();
@@ -111,20 +123,20 @@ export default function ConferenceView({
     return Object.values(remotePeers).some((peer) => peer.userId === participantUserId);
   });
 
-  // Mute forcé par l'hôte : couper réellement le micro côté client dès que
-  // ma ligne passe force_muted=true (jusque-là ça ne faisait qu'afficher un
-  // badge, sans effet sur le flux audio produit).
+  // Mute forcé par l'hôte. Deux sources concordantes : la ligne en base (qui
+  // survit à un rechargement) et le signal direct du SFU (immédiat, et déjà
+  // appliqué côté serveur). L'une ou l'autre suffit à couper.
   const myParticipantRow = participants?.find(
     (p) => (p.profile_id || p.guest_id) === currentUserId
   );
-  const isForceMuted = !!myParticipantRow?.force_muted;
+  const isForceMuted = !!myParticipantRow?.force_muted || isForceMutedBySignal;
 
   useEffect(() => {
     if (isForceMuted && isMicOn) {
-      toggleMic();
+      setMicEnabled(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isForceMuted]);
+  }, [isForceMuted, isMicOn]);
 
   const handleLeave = async () => {
     leaveMeeting();
@@ -218,6 +230,7 @@ export default function ConferenceView({
             isMicOn={isMicOn}
             isVideoOn={isVideoOn}
             raisedHands={raisedHands}
+            remoteMediaState={remoteMediaState}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-ink-500">Chargement…</div>
@@ -228,6 +241,7 @@ export default function ConferenceView({
           currentUserId={currentUserId}
           currentUserName={currentUserName}
           isHost={isHost}
+          roomChannel={roomChannel}
           participants={connectedParticipants}
           waitingParticipants={waitingParticipants}
           onAdmit={onAdmit}

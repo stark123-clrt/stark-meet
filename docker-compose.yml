@@ -23,12 +23,19 @@ services:
       dockerfile: Dockerfile.mediasoup
     ports:
       - "3001:3001"
-      - "10000-10100:10000-10100/udp"
+      # ~2 ports UDP par participant connecté, toutes réunions confondues.
+      # Doit rester identique à MEDIASOUP_MIN_PORT/MAX_PORT.
+      - "40000-40399:40000-40399/udp"
+      - "40000-40399:40000-40399/tcp"
     environment:
       - NODE_ENV=production
       - PORT=3001
       - CLIENT_URL=${NEXT_PUBLIC_APP_URL}
       - MEDIASOUP_ANNOUNCED_IP=${MEDIASOUP_ANNOUNCED_IP}
+      - MEDIASOUP_MIN_PORT=40000
+      - MEDIASOUP_MAX_PORT=40399
+      # Un worker par cœur par défaut. À plafonner si le VPS partage son CPU.
+      # - MEDIASOUP_WORKERS=2
     restart: unless-stopped
     networks:
       - stark-meet-network

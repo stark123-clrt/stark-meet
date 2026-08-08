@@ -171,10 +171,17 @@ end $$;
 -- ============================================================================
 -- Realtime publication
 -- ============================================================================
--- meeting_participants : pour que l'hôte voie les nouvelles demandes
--- d'admission en direct, et que chaque participant voie son propre statut
--- changer (admis / refusé / exclu / mute forcé) sans recharger la page.
--- meeting_messages : chat en direct.
+-- ⚠️ L'application ne dépend PLUS de Supabase Realtime. Son websocket n'est
+-- pas exposé sur cette instance self-hosted : aucun événement n'arrivait aux
+-- clients, qui devaient rafraîchir la page pour voir une demande d'admission,
+-- une admission ou un mute forcé.
+--
+-- Tout le temps réel passe désormais par le serveur Socket.io (events
+-- `control:*` dans server-mediasoup.js) ; ces tables restent la source de
+-- vérité persistante, relue au chargement et en réconciliation périodique.
+--
+-- La publication est conservée : elle ne coûte rien et redevient utilisable
+-- telle quelle si le service Realtime est un jour correctement exposé.
 
 do $$
 declare

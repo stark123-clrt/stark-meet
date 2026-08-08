@@ -5,6 +5,12 @@ import { useParams, useRouter } from 'next/navigation';
 import { Lock, Clock, User as UserIcon } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import ConferenceView from '@/components/conference/ConferenceView';
+import useRoomChannel from '@/hooks/useRoomChannel';
+
+// Filet de sécurité si le canal temps réel est momentanément indisponible :
+// on resynchronise la liste depuis Supabase de temps en temps. Volontairement
+// lent — le socket fait tout le travail en temps normal.
+const RECONCILE_INTERVAL_MS = 15000;
 
 function getOrCreateGuestIdentity(meetingCode) {
   const key = `stark-meet-guest-${meetingCode}`;
@@ -33,8 +39,11 @@ export default function RoomPage() {
   const [lockedOut, setLockedOut] = useState(false);
 
   const guestIdentityRef = useRef(null);
+  const myParticipantIdRef = useRef(null);
+  myParticipantIdRef.current = myParticipant?.id || null;
 
-  const isHost = authUser && meeting && authUser.id === meeting.host_id;
+  const isHost = !!(authUser && meeting && authUser.id === meeting.host_id);
+  const currentUserId = authUser?.id || guestIdentityRef.current?.guestId || null;
 
   // ---- Chargement initial : réunion + identité ----
   useEffect(() => {
@@ -170,60 +179,105 @@ export default function RoomPage() {
     await joinAsIdentity(meeting, { guestId: identity.guestId, displayName });
   };
 
-  // ---- Realtime : suivre mon propre statut + (si hôte) tous les participants ----
-  useEffect(() => {
-    if (!meeting) return;
-
+  // ---- Synchronisation de la liste des participants ----
+  const loadParticipants = useCallback(async () => {
+    if (!meeting?.id) return;
     const supabase = createClient();
+    const { data } = await supabase
+      .from('meeting_participants')
+      .select('*')
+      .eq('meeting_id', meeting.id)
+      .order('created_at', { ascending: true });
 
-    const loadParticipants = async () => {
-      const { data } = await supabase
-        .from('meeting_participants')
-        .select('*')
-        .eq('meeting_id', meeting.id)
-        .order('created_at', { ascending: true });
-      setParticipants(data || []);
-    };
+    if (!data) return;
+    setParticipants(data);
 
+    const mine = myParticipantIdRef.current && data.find(p => p.id === myParticipantIdRef.current);
+    if (mine) setMyParticipant(mine);
+  }, [meeting?.id]);
+
+  useEffect(() => {
     loadParticipants();
+  }, [loadParticipants]);
 
-    const channel = supabase
-      .channel(`room-${meeting.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'meeting_participants', filter: `meeting_id=eq.${meeting.id}` },
-        (payload) => {
-          loadParticipants();
+  // Une action (admission, exclusion…) déclenche un événement chez tout le
+  // monde en même temps. Sans regroupement, une salle de 40 personnes envoie
+  // 40 requêtes simultanées à Supabase à chaque clic de l'hôte.
+  const reloadTimerRef = useRef(null);
+  const scheduleReload = useCallback(() => {
+    clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = setTimeout(loadParticipants, 250);
+  }, [loadParticipants]);
 
-          // Si c'est ma propre ligne qui change, garder mon état local à jour
-          if (payload.new && myParticipant && payload.new.id === myParticipant.id) {
-            setMyParticipant(payload.new);
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'meetings', filter: `id=eq.${meeting.id}` },
-        (payload) => setMeeting(payload.new)
-      )
-      .subscribe();
+  useEffect(() => () => clearTimeout(reloadTimerRef.current), []);
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [meeting, myParticipant?.id]);
+  // ---- Canal temps réel (Socket.io) ----
+  const applyParticipantPatch = useCallback((participantId, patch) => {
+    setParticipants(prev => prev.map(p => (p.id === participantId ? { ...p, ...patch } : p)));
+    setMyParticipant(prev => (prev && prev.id === participantId ? { ...prev, ...patch } : prev));
+  }, []);
+
+  const handleDirty = useCallback(() => {
+    scheduleReload();
+  }, [scheduleReload]);
+
+  const handleParticipantUpdated = useCallback(({ participantId, patch }) => {
+    // Le patch s'applique tout de suite (affichage instantané) ; la relecture
+    // en base sert juste à rattraper une ligne qu'on ne connaîtrait pas encore.
+    applyParticipantPatch(participantId, patch);
+    scheduleReload();
+  }, [applyParticipantPatch, scheduleReload]);
+
+  const handleMeetingUpdated = useCallback(({ patch }) => {
+    setMeeting(prev => (prev ? { ...prev, ...patch } : prev));
+  }, []);
+
+  const handleEjected = useCallback(({ status }) => {
+    setMyParticipant(prev => (prev ? { ...prev, status } : prev));
+  }, []);
+
+  const handleForceMutedSignal = useCallback(({ muted }) => {
+    if (!myParticipantIdRef.current) return;
+    applyParticipantPatch(myParticipantIdRef.current, { force_muted: muted });
+  }, [applyParticipantPatch]);
+
+  const roomChannel = useRoomChannel({
+    meetingId: meeting?.id,
+    participantId: myParticipant?.id,
+    userId: currentUserId,
+    displayName: profile?.full_name || guestIdentityRef.current?.displayName || 'Participant',
+    isHost,
+    onDirty: handleDirty,
+    onParticipantUpdated: handleParticipantUpdated,
+    onMeetingUpdated: handleMeetingUpdated,
+    onEjected: handleEjected,
+    onForceMuted: handleForceMutedSignal,
+  });
+
+  // Réconciliation périodique — uniquement un filet de sécurité.
+  useEffect(() => {
+    if (!meeting?.id) return;
+    const interval = setInterval(loadParticipants, RECONCILE_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [meeting?.id, loadParticipants]);
 
   // ---- Actions hôte ----
+  // Chaque action écrit dans Supabase (persistance) puis diffuse sur le canal
+  // de contrôle (temps réel + application côté SFU pour le mute et
+  // l'exclusion, que la base ne peut pas imposer d'elle-même).
   const updateParticipant = async (participantId, patch) => {
+    const target = participants.find(p => p.id === participantId);
+    const targetUserId = target?.profile_id || target?.guest_id || null;
+
     const supabase = createClient();
     const { error } = await supabase.from('meeting_participants').update(patch).eq('id', participantId);
     if (error) {
       console.error('Erreur mise à jour participant:', error);
       throw error;
     }
-    // Retour optimiste : ne pas attendre l'aller-retour Realtime pour que
-    // l'hôte voie la liste se mettre à jour immédiatement.
-    setParticipants(prev => prev.map(p => (p.id === participantId ? { ...p, ...patch } : p)));
+
+    applyParticipantPatch(participantId, patch);
+    roomChannel.sendParticipantUpdate(participantId, targetUserId, patch);
   };
 
   const handleAdmit = (id) => updateParticipant(id, { status: 'admitted', joined_at: new Date().toISOString() });
@@ -231,7 +285,7 @@ export default function RoomPage() {
   const handleRemove = (id) => updateParticipant(id, { status: 'removed' });
   const handleForceMute = (id) => {
     const target = participants.find(p => p.id === id);
-    updateParticipant(id, { force_muted: !target?.force_muted });
+    return updateParticipant(id, { force_muted: !target?.force_muted });
   };
 
   const handleToggleLock = async () => {
@@ -239,6 +293,7 @@ export default function RoomPage() {
     const newLockedAt = meeting.locked_at ? null : new Date().toISOString();
     await supabase.from('meetings').update({ locked_at: newLockedAt }).eq('id', meeting.id);
     setMeeting(prev => ({ ...prev, locked_at: newLockedAt }));
+    roomChannel.sendMeetingUpdate({ locked_at: newLockedAt });
   };
 
   const handleLeaveMeeting = async () => {
@@ -346,9 +401,10 @@ export default function RoomPage() {
   return (
     <ConferenceView
       meeting={meeting}
-      currentUserId={authUser?.id || guestIdentityRef.current?.guestId}
+      currentUserId={currentUserId}
       currentUserName={profile?.full_name || guestIdentityRef.current?.displayName || 'Vous'}
-      isHost={!!isHost}
+      isHost={isHost}
+      roomChannel={roomChannel}
       participants={admittedParticipants}
       waitingParticipants={waitingParticipants}
       onLeaveMeeting={handleLeaveMeeting}

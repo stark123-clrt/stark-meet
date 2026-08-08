@@ -22,7 +22,8 @@ COPY server-mediasoup.js ./
 
 # Exposer les ports
 EXPOSE 3001
-EXPOSE 10000-10100/udp
+EXPOSE 40000-40399/udp
+EXPOSE 40000-40399/tcp
 
 # Variables d'environnement
 ENV NODE_ENV=production

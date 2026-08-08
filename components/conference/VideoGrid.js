@@ -19,6 +19,7 @@ export default function VideoGrid({
   isMicOn,
   isVideoOn,
   raisedHands,
+  remoteMediaState,
 }) {
   const findParticipant = (userId) =>
     participants?.find((p) => p.profile_id === userId || p.guest_id === userId);
@@ -44,6 +45,7 @@ export default function VideoGrid({
     Object.entries(remoteStreams || {}).forEach(([peerId, stream]) => {
       const peerInfo = remotePeers?.[peerId];
       const matched = peerInfo?.userId ? findParticipant(peerInfo.userId) : null;
+      const media = remoteMediaState?.[peerId] || {};
       list.push({
         tileId: peerId,
         participant: {
@@ -54,12 +56,16 @@ export default function VideoGrid({
         stream,
         isLocal: false,
         handRaised: !!raisedHands?.[peerInfo?.userId],
+        // `force_muted` en base couvre le cas où l'hôte coupe quelqu'un qui
+        // n'a pas encore de flux audio actif.
+        micEnabled: !media.audioPaused && !matched?.force_muted,
+        videoEnabled: !media.videoPaused,
       });
     });
 
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, remotePeers, remoteStreams, localStream, currentUserId, raisedHands]);
+  }, [participants, remotePeers, remoteStreams, localStream, currentUserId, raisedHands, remoteMediaState]);
 
   const [activeId, setActiveId] = useState(null);
 
@@ -97,8 +103,8 @@ export default function VideoGrid({
           participant={active.participant}
           stream={active.stream}
           isLocal={active.isLocal}
-          videoEnabled={active.isLocal ? isVideoOn : true}
-          micEnabled={active.isLocal ? isMicOn : true}
+          videoEnabled={active.isLocal ? isVideoOn : active.videoEnabled}
+          micEnabled={active.isLocal ? isMicOn : active.micEnabled}
         />
       </div>
 
@@ -111,8 +117,8 @@ export default function VideoGrid({
               participant={t.participant}
               stream={t.stream}
               isLocal={t.isLocal}
-              videoEnabled={t.isLocal ? isVideoOn : true}
-              micEnabled={t.isLocal ? isMicOn : true}
+              videoEnabled={t.isLocal ? isVideoOn : t.videoEnabled}
+              micEnabled={t.isLocal ? isMicOn : t.micEnabled}
               isActiveSpeaker={t.tileId === active.tileId}
               onSelect={() => setActiveId(t.tileId)}
             />

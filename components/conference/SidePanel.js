@@ -14,6 +14,7 @@ export default function SidePanel({
   currentUserId,
   currentUserName,
   isHost,
+  roomChannel,
   participants,
   waitingParticipants,
   onAdmit,
@@ -90,7 +91,12 @@ export default function SidePanel({
             runAction={runAction}
           />
         ) : (
-          <DiscussionTab meetingId={meetingId} currentUserId={currentUserId} currentUserName={currentUserName} />
+          <DiscussionTab
+            meetingId={meetingId}
+            currentUserId={currentUserId}
+            currentUserName={currentUserName}
+            roomChannel={roomChannel}
+          />
         )}
       </div>
     </>
@@ -182,37 +188,33 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
   );
 }
 
-function DiscussionTab({ meetingId, currentUserId, currentUserName }) {
+function DiscussionTab({ meetingId, currentUserId, currentUserName, roomChannel }) {
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const scrollRef = useRef(null);
 
+  // Historique : lu une fois depuis Supabase à l'ouverture.
   useEffect(() => {
     if (!meetingId) return;
     const supabase = createClient();
 
-    const loadMessages = async () => {
-      const { data } = await supabase
-        .from('meeting_messages')
-        .select('*')
-        .eq('meeting_id', meetingId)
-        .order('created_at', { ascending: true });
-      setMessages(data || []);
-    };
-    loadMessages();
-
-    const channel = supabase
-      .channel(`meeting-chat-${meetingId}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'meeting_messages', filter: `meeting_id=eq.${meetingId}` },
-        (payload) => setMessages((prev) => [...prev, payload.new])
-      )
-      .subscribe();
-
-    return () => supabase.removeChannel(channel);
+    supabase
+      .from('meeting_messages')
+      .select('*')
+      .eq('meeting_id', meetingId)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => setMessages(data || []));
   }, [meetingId]);
+
+  // Messages en direct : relayés par le serveur Socket.io. Le dédoublonnage
+  // par id couvre le cas où un message arriverait par deux chemins.
+  useEffect(() => {
+    if (!roomChannel?.connected) return;
+    return roomChannel.subscribe('control:chat', ({ message }) => {
+      setMessages((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]));
+    });
+  }, [roomChannel, roomChannel?.connected]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -224,13 +226,27 @@ function DiscussionTab({ meetingId, currentUserId, currentUserName }) {
     if (!content || sending) return;
     setSending(true);
     setDraft('');
+
     const supabase = createClient();
-    await supabase.from('meeting_messages').insert({
-      meeting_id: meetingId,
-      sender_id: currentUserId,
-      sender_name: currentUserName,
-      content,
-    });
+    const { data, error } = await supabase
+      .from('meeting_messages')
+      .insert({
+        meeting_id: meetingId,
+        sender_id: currentUserId,
+        sender_name: currentUserName,
+        content,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Erreur envoi message:', error);
+      setDraft(content);
+    } else if (data) {
+      setMessages((prev) => (prev.some((m) => m.id === data.id) ? prev : [...prev, data]));
+      roomChannel?.sendChat(data);
+    }
+
     setSending(false);
   };
 
