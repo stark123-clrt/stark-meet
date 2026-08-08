@@ -69,8 +69,12 @@ const NUM_WORKERS = Math.max(1, Math.min(Number(process.env.MEDIASOUP_WORKERS) |
 // La plage doit rester alignée avec celle publiée par Docker (docker-compose)
 // ou le pare-feu du VPS. Pour aller nettement plus haut, passer le conteneur
 // mediasoup en `network_mode: host` et élargir ces bornes.
+//
+// ⚠️ Ces bornes doivent correspondre EXACTEMENT aux ports publiés par Docker.
+// Si mediasoup peut piocher au-delà de ce qui est mappé, il attribuera parfois
+// un port injoignable et la connexion échouera de façon aléatoire.
 const RTC_MIN_PORT = Number(process.env.MEDIASOUP_MIN_PORT) || 40000;
-const RTC_MAX_PORT = Number(process.env.MEDIASOUP_MAX_PORT) || 40399;
+const RTC_MAX_PORT = Number(process.env.MEDIASOUP_MAX_PORT) || 40199;
 
 const mediasoupConfig = {
   worker: {
