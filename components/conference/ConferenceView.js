@@ -21,6 +21,7 @@ import VideoGrid from './VideoGrid';
 import SidePanel from './SidePanel';
 import DeviceSelector from './DeviceSelector';
 import useMediasoup from '@/hooks/useMediasoup';
+import { initialsOf } from '@/lib/identity';
 
 function formatElapsed(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -60,6 +61,7 @@ export default function ConferenceView({
 }) {
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
   const [showDeviceSelector, setShowDeviceSelector] = useState(false);
+  const [unreadMessages, setUnreadMessages] = useState(0);
   const [copied, setCopied] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const hasJoinedRef = useRef(false);
@@ -152,7 +154,7 @@ export default function ConferenceView({
   const isLocked = !!meeting?.locked_at;
   const waitingCount = waitingParticipants?.length || 0;
   const totalCount = connectedParticipants.length + waitingCount;
-  const initials = (currentUserName || '?').trim().slice(0, 2).toUpperCase();
+  const initials = initialsOf(currentUserName);
 
   return (
     <div className="flex flex-col h-full w-full bg-ink-950 overflow-hidden">
@@ -204,9 +206,16 @@ export default function ConferenceView({
             title="Participants et discussion"
           >
             <Users className="h-4 w-4" />
-            {waitingCount > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-ink-950 text-[9px] font-bold flex items-center justify-center">
-                {waitingCount}
+            {/* Le panneau est masqué sur mobile : sans ce cumul, un message de
+                chat resterait totalement invisible sur téléphone. Les demandes
+                d'admission restent prioritaires en couleur. */}
+            {waitingCount + unreadMessages > 0 && (
+              <span
+                className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center ${
+                  waitingCount > 0 ? 'bg-amber-500 text-ink-950' : 'bg-signal-500 text-white'
+                }`}
+              >
+                {waitingCount + unreadMessages}
               </span>
             )}
           </button>
@@ -250,6 +259,7 @@ export default function ConferenceView({
           onRemove={onRemove}
           mobileOpen={mobilePanelOpen}
           onCloseMobile={() => setMobilePanelOpen(false)}
+          onUnreadChange={setUnreadMessages}
         />
       </div>
 

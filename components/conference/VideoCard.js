@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { MicOff } from 'lucide-react';
+import { initialsOf } from '@/lib/identity';
 
 // Palette de dégradés du design (mockup Claude Design) — assignée de façon
 // déterministe par participant (hash du nom) pour varier les tuiles sans
@@ -18,13 +19,6 @@ function gradientFor(seed) {
   let hash = 0;
   for (let i = 0; i < (seed || '').length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
   return TILE_GRADIENTS[hash % TILE_GRADIENTS.length];
-}
-
-function getInitials(name) {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  return name.substring(0, 2).toUpperCase();
 }
 
 /**
@@ -147,7 +141,7 @@ export default function VideoCard({
   }, [stream, isAudioActive]);
 
   const isStage = variant === 'stage';
-  const initials = getInitials(participant?.name);
+  const initials = initialsOf(participant?.name);
   const bg = gradientFor(participant?.id || participant?.name || 'x');
   const isHost = participant?.role === 'host';
   const shortName = (participant?.name || 'Participant').replace(' (vous)', ' · vous');

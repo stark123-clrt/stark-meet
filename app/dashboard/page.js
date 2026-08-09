@@ -5,13 +5,7 @@ import { useRouter } from 'next/navigation';
 import { LogOut, Plus, Copy, Video, CalendarClock, Users, Settings } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import CreateMeetingDialog from '@/components/dashboard/CreateMeetingDialog';
-
-function initialsOf(name) {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  return name.substring(0, 2).toUpperCase();
-}
+import { initialsOf } from '@/lib/identity';
 
 export default function DashboardPage() {
   const router = useRouter();

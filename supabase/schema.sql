@@ -136,6 +136,41 @@ create policy "Public can insert meeting messages" on meeting_messages for inser
 create index if not exists idx_meeting_messages_meeting on meeting_messages(meeting_id);
 create index if not exists idx_meeting_messages_created on meeting_messages(created_at);
 
+-- ============================================================================
+-- meeting_message_reactions (réactions emoji sur un message)
+-- ============================================================================
+-- user_id est l'identifiant applicatif de la personne : profile_id pour un
+-- compte, guest_id pour un invité anonyme — sans clé étrangère, donc, puisque
+-- les deux ne vivent pas dans la même table.
+--
+-- La contrainte d'unicité rend le basculement idempotent : réagir deux fois
+-- avec le même emoji ne crée pas de doublon, et un double clic ne fausse pas
+-- les compteurs.
+
+create table if not exists meeting_message_reactions (
+  id uuid primary key default gen_random_uuid(),
+  message_id uuid not null references meeting_messages(id) on delete cascade,
+  user_id uuid not null,
+  user_name text not null,
+  emoji text not null,
+  created_at timestamptz default now(),
+  constraint meeting_message_reactions_unique unique (message_id, user_id, emoji)
+);
+
+alter table meeting_message_reactions enable row level security;
+
+-- `drop if exists` d'abord : ce bloc est destiné à être exécuté seul sur une
+-- base déjà en service, et `create policy` échoue si la politique existe.
+drop policy if exists "Public can view all message reactions" on meeting_message_reactions;
+drop policy if exists "Public can insert message reactions" on meeting_message_reactions;
+drop policy if exists "Public can delete message reactions" on meeting_message_reactions;
+
+create policy "Public can view all message reactions" on meeting_message_reactions for select using (true);
+create policy "Public can insert message reactions" on meeting_message_reactions for insert with check (true);
+create policy "Public can delete message reactions" on meeting_message_reactions for delete using (true);
+
+create index if not exists idx_message_reactions_message on meeting_message_reactions(message_id);
+
 
 
 -- ============================================================================

@@ -618,6 +618,14 @@ io.on('connection', (socket) => {
     socket.to(controlRoomName(meetingId)).emit('control:chat', { message });
   });
 
+  // Réaction emoji ajoutée ou retirée. Même principe que ci-dessus : la table
+  // meeting_message_reactions a déjà été mise à jour par l'émetteur, qui a
+  // aussi appliqué le changement chez lui — on ne relaie qu'aux autres.
+  socket.on('control:chat-reaction', ({ meetingId, reaction }) => {
+    if (!meetingId || !reaction) return;
+    socket.to(controlRoomName(meetingId)).emit('control:chat-reaction', { reaction });
+  });
+
   socket.on('control:leave', (callback) => {
     cleanupControl(socket);
     if (callback) callback({ success: true });

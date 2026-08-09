@@ -1,8 +1,29 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { X, Mic, MicOff, UserX, Send } from 'lucide-react';
-import { createClient } from '@/lib/supabase';
+import { useEffect, useState } from 'react';
+import { X, Mic, MicOff, UserX } from 'lucide-react';
+import { initialsOf, avatarColorFor } from '@/lib/identity';
+import useMeetingChat from '@/hooks/useMeetingChat';
+import ChatPanel from './ChatPanel';
+
+/**
+ * Vrai quand le panneau latéral est affiché en colonne fixe (le point de
+ * rupture `lg` de Tailwind), plutôt qu'en superposition mobile. Mesuré dans un
+ * effet et non pendant le rendu, pour ne pas diverger du rendu serveur.
+ */
+function useIsWidePanel() {
+  const [isWide, setIsWide] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 1024px)');
+    const sync = () => setIsWide(query.matches);
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
+
+  return isWide;
+}
 
 /**
  * SidePanel — panneau latéral à onglets Discussion / Participants, fidèle
@@ -23,11 +44,37 @@ export default function SidePanel({
   onRemove,
   mobileOpen,
   onCloseMobile,
+  onUnreadChange,
 }) {
   const [tab, setTab] = useState('participants');
   const admitted = participants || [];
   const waiting = waitingParticipants || [];
   const totalCount = admitted.length + waiting.length;
+
+  // Le chat est piloté ici, et non dans l'onglet Discussion : les onglets sont
+  // montés/démontés par le ternaire plus bas, si bien qu'un état vivant dans
+  // l'onglet serait détruit — et son abonnement socket coupé — dès qu'on
+  // regarde la liste des participants.
+  //
+  // La discussion compte comme lue lorsqu'elle est réellement à l'écran :
+  // onglet actif ET panneau visible. Sur grand écran le panneau est toujours
+  // là ; sur mobile c'est une superposition qu'on peut refermer.
+  const isWidePanel = useIsWidePanel();
+  const chatVisible = tab === 'discussion' && (isWidePanel || mobileOpen);
+
+  const chat = useMeetingChat({
+    meetingId,
+    currentUserId,
+    currentUserName,
+    roomChannel,
+    isVisible: chatVisible,
+  });
+
+  // Remonter le compteur dans un effet, jamais pendant le rendu : appeler le
+  // parent en plein rendu déclencherait un setState croisé.
+  useEffect(() => {
+    onUnreadChange?.(chat.unreadCount);
+  }, [chat.unreadCount, onUnreadChange]);
 
   const [processingIds, setProcessingIds] = useState(new Set());
   const runAction = async (id, action) => {
@@ -59,11 +106,16 @@ export default function SidePanel({
         <div className="flex flex-none items-center border-b border-ink-700">
           <button
             onClick={() => setTab('discussion')}
-            className={`flex-1 text-center py-3.5 text-[13.5px] font-mono transition-colors ${
+            className={`relative flex-1 text-center py-3.5 text-[13.5px] font-mono transition-colors ${
               tab === 'discussion' ? 'text-white bg-ink-800 border-b-2 border-signal-500' : 'text-ink-500'
             }`}
           >
             Discussion
+            {chat.unreadCount > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signal-500 text-white text-[10px] font-bold align-middle">
+                {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setTab('participants')}
@@ -91,11 +143,12 @@ export default function SidePanel({
             runAction={runAction}
           />
         ) : (
-          <DiscussionTab
-            meetingId={meetingId}
+          <ChatPanel
+            messages={chat.messages}
+            loading={chat.loading}
             currentUserId={currentUserId}
-            currentUserName={currentUserName}
-            roomChannel={roomChannel}
+            onSend={chat.sendMessage}
+            onToggleReaction={chat.toggleReaction}
           />
         )}
       </div>
@@ -103,8 +156,18 @@ export default function SidePanel({
   );
 }
 
-function initialsOf(name) {
-  return (name || '?').trim().slice(0, 2).toUpperCase();
+/** Pastille d'initiales, colorée de façon stable — même rendu que dans le chat. */
+function Avatar({ name, seed }) {
+  const color = avatarColorFor(seed || name);
+  return (
+    <span
+      className="w-8 h-8 rounded-full font-mono text-[11px] font-bold flex items-center justify-center flex-none"
+      style={{ background: color.bg, color: color.fg }}
+      title={name}
+    >
+      {initialsOf(name)}
+    </span>
+  );
 }
 
 function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMute, onRemove, processingIds, runAction }) {
@@ -119,9 +182,7 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
           <div className="flex flex-col gap-2.5">
             {waiting.map((w) => (
               <div key={w.id} className="flex items-center gap-2.5">
-                <span className="w-8 h-8 rounded-full bg-white/[0.09] text-white font-mono text-[11px] font-semibold flex items-center justify-center flex-none">
-                  {initialsOf(w.display_name)}
-                </span>
+                <Avatar name={w.display_name} seed={w.profile_id || w.guest_id || w.id} />
                 <span className="flex-1 text-[13.5px] font-medium text-white truncate min-w-0">{w.display_name}</span>
                 <button
                   onClick={() => runAction(w.id, onAdmit)}
@@ -149,9 +210,7 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
         </span>
         {admitted.map((p) => (
           <div key={p.id} className="flex items-center gap-2.5 py-2 px-1.5 rounded-md hover:bg-white/[0.04] transition-colors group">
-            <span className="w-8 h-8 rounded-full bg-white/[0.09] text-white font-mono text-[11px] font-semibold flex items-center justify-center flex-none">
-              {initialsOf(p.display_name)}
-            </span>
+            <Avatar name={p.display_name} seed={p.profile_id || p.guest_id || p.id} />
             <div className="flex-1 flex items-center gap-2 min-w-0">
               <span className="text-[13.5px] font-medium text-white truncate">{p.display_name}</span>
               {(p.role === 'host' || p.role === 'co-host') && (
@@ -184,108 +243,6 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function DiscussionTab({ meetingId, currentUserId, currentUserName, roomChannel }) {
-  const [messages, setMessages] = useState([]);
-  const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
-  const scrollRef = useRef(null);
-
-  // Historique : lu une fois depuis Supabase à l'ouverture.
-  useEffect(() => {
-    if (!meetingId) return;
-    const supabase = createClient();
-
-    supabase
-      .from('meeting_messages')
-      .select('*')
-      .eq('meeting_id', meetingId)
-      .order('created_at', { ascending: true })
-      .then(({ data }) => setMessages(data || []));
-  }, [meetingId]);
-
-  // Messages en direct : relayés par le serveur Socket.io. Le dédoublonnage
-  // par id couvre le cas où un message arriverait par deux chemins.
-  useEffect(() => {
-    if (!roomChannel?.connected) return;
-    return roomChannel.subscribe('control:chat', ({ message }) => {
-      setMessages((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]));
-    });
-  }, [roomChannel, roomChannel?.connected]);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
-
-  const handleSend = async (e) => {
-    e.preventDefault();
-    const content = draft.trim();
-    if (!content || sending) return;
-    setSending(true);
-    setDraft('');
-
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from('meeting_messages')
-      .insert({
-        meeting_id: meetingId,
-        sender_id: currentUserId,
-        sender_name: currentUserName,
-        content,
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error('Erreur envoi message:', error);
-      setDraft(content);
-    } else if (data) {
-      setMessages((prev) => (prev.some((m) => m.id === data.id) ? prev : [...prev, data]));
-      roomChannel?.sendChat(data);
-    }
-
-    setSending(false);
-  };
-
-  return (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-4 flex flex-col gap-4">
-        {messages.length === 0 && (
-          <p className="text-ink-500 text-sm text-center mt-8">Aucun message pour l'instant.</p>
-        )}
-        {messages.map((msg) => (
-          <div key={msg.id} className="flex flex-col gap-1">
-            <div className="flex items-baseline gap-2">
-              <span className="text-[13px] font-semibold text-white">
-                {msg.sender_id === currentUserId ? 'Vous' : msg.sender_name}
-              </span>
-              <span className="font-mono text-[11px] text-ink-600">
-                {new Date(msg.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            </div>
-            <span className="text-[13.5px] leading-relaxed text-mist-300">{msg.content}</span>
-          </div>
-        ))}
-      </div>
-      <form onSubmit={handleSend} className="flex-none p-3.5 border-t border-ink-700 flex gap-2">
-        <input
-          type="text"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Écrire un message…"
-          className="flex-1 bg-white/[0.05] border border-ink-700 rounded-md px-3.5 py-2.5 text-[13.5px] text-white placeholder:text-ink-500 focus:outline-none focus:border-signal-500 transition-colors"
-        />
-        <button
-          type="submit"
-          disabled={!draft.trim() || sending}
-          className="p-2.5 rounded-md bg-signal-500 hover:bg-signal-400 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors flex-none"
-        >
-          <Send className="h-4 w-4" />
-        </button>
-      </form>
     </div>
   );
 }

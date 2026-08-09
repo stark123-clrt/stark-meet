@@ -115,6 +115,13 @@ export default function useRoomChannel({
     });
   }, []);
 
+  const sendReaction = useCallback((reaction) => {
+    socketRef.current?.emit('control:chat-reaction', {
+      meetingId: identityRef.current.meetingId,
+      reaction,
+    });
+  }, []);
+
   // Permet à un composant enfant (le chat du panneau latéral) d'écouter le
   // canal sans qu'on ait à remonter son état jusqu'à la page.
   const subscribe = useCallback((event, handler) => {
@@ -128,7 +135,7 @@ export default function useRoomChannel({
   // (le chat s'abonne au canal), et une nouvelle référence à chaque rendu les
   // ferait se désabonner/réabonner en boucle.
   return useMemo(
-    () => ({ connected, sendParticipantUpdate, sendMeetingUpdate, sendChat, subscribe }),
-    [connected, sendParticipantUpdate, sendMeetingUpdate, sendChat, subscribe]
+    () => ({ connected, sendParticipantUpdate, sendMeetingUpdate, sendChat, sendReaction, subscribe }),
+    [connected, sendParticipantUpdate, sendMeetingUpdate, sendChat, sendReaction, subscribe]
   );
 }
