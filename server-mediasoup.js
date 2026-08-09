@@ -232,6 +232,7 @@ io.on('connection', (socket) => {
           // Forme détaillée (et non plus une simple liste d'ids) : le nouvel
           // arrivant a besoin du kind et de l'état de pause pour afficher
           // d'emblée les bons badges micro/caméra des gens déjà en ligne.
+          sharingScreen: !!peer.sharingScreen,
           producers: Array.from(peer.producers.values()).map((p) => ({
             id: p.id,
             kind: p.kind,
@@ -529,6 +530,18 @@ io.on('connection', (socket) => {
   socket.on('toggle-hand', ({ raised }) => {
     if (!socket.meetingId) return;
     socket.to(socket.meetingId).emit('hand-toggled', { peerId: socket.id, userId: socket.userId, raised });
+  });
+
+  // Le partage d'écran réutilise le producer vidéo existant (replaceTrack) :
+  // rien dans le flux ne dit aux autres que ce n'est plus une caméra. Sans ce
+  // signal, ils affichent l'écran partagé rogné, comme un visage.
+  socket.on('screen-share', ({ sharing }) => {
+    if (!socket.meetingId) return;
+    const room = rooms.get(socket.meetingId);
+    const peer = room?.peers.get(socket.id);
+    if (peer) peer.sharingScreen = !!sharing;
+
+    socket.to(socket.meetingId).emit('peer-screen-share', { peerId: socket.id, sharing: !!sharing });
   });
 
   // Quitter volontairement la salle (l'utilisateur clique "Quitter", ou est

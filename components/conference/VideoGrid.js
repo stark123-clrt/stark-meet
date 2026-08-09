@@ -20,6 +20,8 @@ export default function VideoGrid({
   isVideoOn,
   raisedHands,
   remoteMediaState,
+  remoteScreenShares,
+  isScreenSharing,
 }) {
   const findParticipant = (userId) =>
     participants?.find((p) => p.profile_id === userId || p.guest_id === userId);
@@ -39,6 +41,7 @@ export default function VideoGrid({
         stream: localStream,
         isLocal: true,
         handRaised: !!raisedHands?.[currentUserId],
+        isScreenShare: !!isScreenSharing,
       });
     }
 
@@ -60,12 +63,13 @@ export default function VideoGrid({
         // n'a pas encore de flux audio actif.
         micEnabled: !media.audioPaused && !matched?.force_muted,
         videoEnabled: !media.videoPaused,
+        isScreenShare: !!remoteScreenShares?.[peerId],
       });
     });
 
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, remotePeers, remoteStreams, localStream, currentUserId, raisedHands, remoteMediaState]);
+  }, [participants, remotePeers, remoteStreams, localStream, currentUserId, raisedHands, remoteMediaState, remoteScreenShares, isScreenSharing]);
 
   const [activeId, setActiveId] = useState(null);
 
@@ -105,6 +109,14 @@ export default function VideoGrid({
           isLocal={active.isLocal}
           videoEnabled={active.isLocal ? isVideoOn : active.videoEnabled}
           micEnabled={active.isLocal ? isMicOn : active.micEnabled}
+          handRaised={active.handRaised}
+          isScreenShare={active.isScreenShare}
+          // La personne à l'écran est AUSSI rendue dans le bandeau de
+          // vignettes en dessous : sans cette garde, son flux audio était joué
+          // par deux éléments <audio> à la fois, produisant un filtrage en
+          // peigne — le son « deux micros côte à côte ». C'est la vignette qui
+          // porte l'audio, elle est toujours présente quand il y a du distant.
+          playAudio={false}
         />
       </div>
 
@@ -119,6 +131,8 @@ export default function VideoGrid({
               isLocal={t.isLocal}
               videoEnabled={t.isLocal ? isVideoOn : t.videoEnabled}
               micEnabled={t.isLocal ? isMicOn : t.micEnabled}
+              handRaised={t.handRaised}
+              isScreenShare={t.isScreenShare}
               isActiveSpeaker={t.tileId === active.tileId}
               onSelect={() => setActiveId(t.tileId)}
             />

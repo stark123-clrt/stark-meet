@@ -296,13 +296,19 @@ function MessageRow({
   onClosePicker,
 }) {
   const isMine = message.sender_id === currentUserId;
-  const name = isMine ? 'Vous' : message.sender_name;
   const color = avatarColorFor(message.sender_id || message.sender_name);
   const reactions = groupReactions(message.reactions, currentUserId);
   const big = isBigEmoji(message.content);
 
+  // Mes messages à droite, ceux des autres à gauche, avec des fonds distincts :
+  // on identifie l'auteur d'un coup d'œil sans lire le nom, comme sur
+  // WhatsApp ou Teams. L'avatar reste du côté extérieur de la bulle.
   return (
-    <div className={`group relative flex gap-2.5 px-1 rounded-md hover:bg-white/[0.03] ${startsGroup ? 'mt-3' : ''}`}>
+    <div
+      className={`group relative flex gap-2 px-1 ${startsGroup ? 'mt-3' : ''} ${
+        isMine ? 'flex-row-reverse' : 'flex-row'
+      }`}
+    >
       <div className="flex-none w-8">
         {startsGroup ? (
           <span
@@ -313,31 +319,39 @@ function MessageRow({
             {initialsOf(message.sender_name)}
           </span>
         ) : (
-          // Colonne réservée pour aligner le texte des messages groupés.
+          // Colonne réservée pour aligner les bulles d'un même groupe.
           <span className="block w-8 h-full" />
         )}
       </div>
 
-      <div className="flex-1 min-w-0 pb-0.5">
+      <div className={`flex flex-col min-w-0 max-w-[78%] ${isMine ? 'items-end' : 'items-start'}`}>
         {startsGroup && (
-          <div className="flex items-baseline gap-2">
-            <span className="text-[13px] font-semibold text-white truncate">{name}</span>
+          <div className={`flex items-baseline gap-2 mb-1 ${isMine ? 'flex-row-reverse' : ''}`}>
+            <span className="text-[12.5px] font-semibold text-white truncate">
+              {isMine ? 'Vous' : message.sender_name}
+            </span>
             <span className="font-mono text-[10.5px] text-ink-600 flex-none">
               {formatTime(message.created_at)}
             </span>
           </div>
         )}
 
-        <p
-          className={`text-mist-300 whitespace-pre-wrap break-words ${
-            big ? 'text-[32px] leading-tight py-0.5' : 'text-[13.5px] leading-relaxed'
+        <div
+          className={`px-3 py-2 whitespace-pre-wrap break-words ${
+            big ? 'text-[32px] leading-tight bg-transparent px-1 py-0' : 'text-[13.5px] leading-relaxed'
+          } ${
+            big
+              ? ''
+              : isMine
+                ? 'bg-signal-500/20 border border-signal-500/30 text-white rounded-2xl rounded-tr-sm'
+                : 'bg-white/[0.07] border border-white/[0.05] text-mist-300 rounded-2xl rounded-tl-sm'
           }`}
         >
           {renderContent(message.content)}
-        </p>
+        </div>
 
         {reactions.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-1.5">
+          <div className={`flex flex-wrap gap-1 mt-1 ${isMine ? 'justify-end' : ''}`}>
             {reactions.map((reaction) => (
               <button
                 key={reaction.emoji}
@@ -357,11 +371,12 @@ function MessageRow({
         )}
       </div>
 
-      {/* Barre de réactions rapides, révélée au survol du message. */}
+      {/* Barre de réactions rapides, révélée au survol — côté intérieur, pour
+          ne pas déborder du panneau. */}
       <div
-        className={`absolute -top-3 right-2 z-10 items-center gap-0.5 p-0.5 rounded-md bg-ink-850 border border-ink-700 shadow-lg ${
-          pickerOpen ? 'flex' : 'hidden group-hover:flex'
-        }`}
+        className={`absolute -top-2 z-10 items-center gap-0.5 p-0.5 rounded-md bg-ink-850 border border-ink-700 shadow-lg ${
+          isMine ? 'left-2' : 'right-2'
+        } ${pickerOpen ? 'flex' : 'hidden group-hover:flex'}`}
       >
         {QUICK_REACTIONS.map((emoji) => (
           <button

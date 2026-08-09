@@ -23,6 +23,7 @@ export default function useMediasoup(meetingId, userId, userName) {
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [raisedHands, setRaisedHands] = useState({}); // userId -> bool (participants distants)
   const [remoteMediaState, setRemoteMediaState] = useState({}); // peerId -> { audioPaused, videoPaused }
+  const [remoteScreenShares, setRemoteScreenShares] = useState({}); // peerId -> bool
   const [isForceMuted, setIsForceMuted] = useState(false);
 
   // Refs (persistent across renders)
@@ -99,6 +100,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       socketRef.current.on('producer-paused', handleProducerPaused);
       socketRef.current.on('producer-resumed', handleProducerResumed);
       socketRef.current.on('force-muted', handleForceMuted);
+      socketRef.current.on('peer-screen-share', handlePeerScreenShare);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -527,6 +529,12 @@ export default function useMediasoup(meetingId, userId, userName) {
       return updated;
     });
 
+    setRemoteScreenShares(prev => {
+      const updated = { ...prev };
+      delete updated[peerId];
+      return updated;
+    });
+
     for (const [producerId, owner] of producerOwnersRef.current.entries()) {
       if (owner.peerId === peerId) producerOwnersRef.current.delete(producerId);
     }
@@ -544,6 +552,11 @@ export default function useMediasoup(meetingId, userId, userName) {
     setRaisedHands(prev => ({ ...prev, [userId]: raised }));
   }, []);
 
+  /** Un participant distant a commencé ou arrêté de partager son écran. */
+  const handlePeerScreenShare = useCallback(({ peerId, sharing }) => {
+    setRemoteScreenShares(prev => ({ ...prev, [peerId]: !!sharing }));
+  }, []);
+
   /**
    * Lever/baisser ma propre main — signal éphémère relayé aux autres via
    * Mediasoup (pas de persistance en base, comme le mic/la caméra).
@@ -552,9 +565,16 @@ export default function useMediasoup(meetingId, userId, userName) {
     setIsHandRaised(prev => {
       const next = !prev;
       socketRef.current?.emit('toggle-hand', { raised: next });
+
+      // Se référencer soi-même dans `raisedHands` : cette table ne contenait
+      // que les participants distants, si bien qu'on ne voyait jamais sa
+      // propre main levée — ni sur sa tuile, ni dans la liste des
+      // participants. Une seule table pour tout le monde.
+      if (userId) setRaisedHands(hands => ({ ...hands, [userId]: next }));
+
       return next;
     });
-  }, []);
+  }, [userId]);
 
   /**
    * Initialiser le média local (caméra et micro)
@@ -637,6 +657,9 @@ export default function useMediasoup(meetingId, userId, userName) {
       // 4.5 Consommer les flux des participants déjà présents dans la salle
       // (sinon on ne voit/entend que ceux qui rejoignent APRÈS nous)
       for (const peer of roomResponse.peers || []) {
+        if (peer.sharingScreen) {
+          setRemoteScreenShares(prev => ({ ...prev, [peer.peerId]: true }));
+        }
         for (const remoteProducer of peer.producers || []) {
           try {
             await consume(remoteProducer.id, peer.peerId, peer.name);
@@ -889,6 +912,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       // L'utilisateur peut arrêter depuis le bandeau natif du navigateur
       screenTrack.addEventListener('ended', () => stopScreenShare());
 
+      socketRef.current?.emit('screen-share', { sharing: true });
       setIsScreenSharing(true);
       setIsVideoOn(true);
       console.log('🖥️ Partage d\'écran démarré');
@@ -924,6 +948,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       }
 
       cameraTrackRef.current = null;
+      socketRef.current?.emit('screen-share', { sharing: false });
       setIsScreenSharing(false);
       console.log('🖥️ Partage d\'écran arrêté');
     } catch (err) {
@@ -942,6 +967,7 @@ export default function useMediasoup(meetingId, userId, userName) {
     isHandRaised,
     raisedHands,
     remoteMediaState,
+    remoteScreenShares,
     isForceMuted,
     error,
     joinMeeting,

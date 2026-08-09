@@ -78,6 +78,7 @@ export default function ConferenceView({
     isHandRaised,
     raisedHands,
     remoteMediaState,
+    remoteScreenShares,
     isForceMuted: isForceMutedBySignal,
     error,
     joinMeeting,
@@ -240,6 +241,8 @@ export default function ConferenceView({
             isVideoOn={isVideoOn}
             raisedHands={raisedHands}
             remoteMediaState={remoteMediaState}
+            remoteScreenShares={remoteScreenShares}
+            isScreenSharing={isScreenSharing}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-ink-500">Chargement…</div>
@@ -253,6 +256,7 @@ export default function ConferenceView({
           roomChannel={roomChannel}
           participants={connectedParticipants}
           waitingParticipants={waitingParticipants}
+          raisedHands={raisedHands}
           onAdmit={onAdmit}
           onDeny={onDeny}
           onForceMute={onForceMute}

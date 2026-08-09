@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Mic, MicOff, UserX } from 'lucide-react';
+import { X, Mic, MicOff, UserX, Hand } from 'lucide-react';
 import { initialsOf, avatarColorFor } from '@/lib/identity';
 import useMeetingChat from '@/hooks/useMeetingChat';
 import ChatPanel from './ChatPanel';
@@ -38,6 +38,7 @@ export default function SidePanel({
   roomChannel,
   participants,
   waitingParticipants,
+  raisedHands,
   onAdmit,
   onDeny,
   onForceMute,
@@ -98,11 +99,23 @@ export default function SidePanel({
         <div className="fixed inset-0 z-30 bg-black/60 lg:hidden" onClick={onCloseMobile} />
       )}
 
+      {/* Sur mobile : feuille ancrée en bas, occupant 72 % de la hauteur, la
+          réunion restant visible au-dessus — c'est ce que font Zoom et Teams.
+          Le panneau couvrait auparavant tout l'écran, si bien qu'ouvrir la
+          discussion faisait entièrement disparaître les participants.
+          Sur grand écran, rien ne change : colonne fixe de 328 px. */}
       <div
-        className={`flex-none w-full sm:w-[328px] bg-ink-900 border-l border-ink-700 flex-col min-h-0 fixed inset-y-0 right-0 z-40 lg:static lg:z-auto ${
-          mobileOpen ? 'flex' : 'hidden lg:flex'
-        }`}
+        className={`bg-ink-900 border-t lg:border-t-0 lg:border-l border-ink-700 flex-col min-h-0
+          fixed inset-x-0 bottom-0 h-[72vh] rounded-t-2xl z-40 shadow-[0_-8px_32px_rgba(0,0,0,0.5)]
+          lg:static lg:z-auto lg:flex-none lg:inset-auto lg:h-auto lg:w-[328px] lg:rounded-none lg:shadow-none ${
+            mobileOpen ? 'flex' : 'hidden lg:flex'
+          }`}
       >
+        {/* Poignée de préhension : indique que la feuille se referme. */}
+        <div className="lg:hidden flex-none flex justify-center pt-2 pb-1">
+          <span className="w-9 h-1 rounded-full bg-white/20" />
+        </div>
+
         <div className="flex flex-none items-center border-b border-ink-700">
           <button
             onClick={() => setTab('discussion')}
@@ -139,6 +152,7 @@ export default function SidePanel({
             onDeny={onDeny}
             onForceMute={onForceMute}
             onRemove={onRemove}
+            raisedHands={raisedHands}
             processingIds={processingIds}
             runAction={runAction}
           />
@@ -170,7 +184,15 @@ function Avatar({ name, seed }) {
   );
 }
 
-function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMute, onRemove, processingIds, runAction }) {
+function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMute, onRemove, raisedHands, processingIds, runAction }) {
+  // Les mains levées passent en tête : c'est l'intérêt du geste, l'hôte doit
+  // les voir sans avoir à parcourir toute la liste.
+  const ordered = [...admitted].sort((a, b) => {
+    const aRaised = !!raisedHands?.[a.profile_id || a.guest_id];
+    const bRaised = !!raisedHands?.[b.profile_id || b.guest_id];
+    return Number(bRaised) - Number(aRaised);
+  });
+
   return (
     <div className="flex-1 overflow-y-auto scrollbar-hide p-4 flex flex-col gap-5 min-h-0">
       {isHost && waiting.length > 0 && (
@@ -208,8 +230,15 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
         <span className="font-mono text-[10.5px] font-bold tracking-wide text-ink-600 pb-2">
           DANS LA RÉUNION · {admitted.length}
         </span>
-        {admitted.map((p) => (
-          <div key={p.id} className="flex items-center gap-2.5 py-2 px-1.5 rounded-md hover:bg-white/[0.04] transition-colors group">
+        {ordered.map((p) => {
+          const handRaised = !!raisedHands?.[p.profile_id || p.guest_id];
+          return (
+          <div
+            key={p.id}
+            className={`flex items-center gap-2.5 py-2 px-1.5 rounded-md transition-colors group ${
+              handRaised ? 'bg-amber-500/10 ring-1 ring-amber-500/30' : 'hover:bg-white/[0.04]'
+            }`}
+          >
             <Avatar name={p.display_name} seed={p.profile_id || p.guest_id || p.id} />
             <div className="flex-1 flex items-center gap-2 min-w-0">
               <span className="text-[13.5px] font-medium text-white truncate">{p.display_name}</span>
@@ -219,6 +248,11 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
                 </span>
               )}
             </div>
+            {handRaised && (
+              <span className="text-amber-500 flex-none animate-pulse" title="A levé la main">
+                <Hand className="h-4 w-4" />
+              </span>
+            )}
             <span className={p.force_muted ? 'text-danger-500' : 'text-ink-500'}>
               {p.force_muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
             </span>
@@ -241,7 +275,8 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { MicOff } from 'lucide-react';
+import { MicOff, Hand, Maximize2, Minimize2 } from 'lucide-react';
 import { initialsOf } from '@/lib/identity';
 
 // Palette de dégradés du design (mockup Claude Design) — assignée de façon
@@ -34,6 +34,9 @@ export default function VideoCard({
   videoEnabled = true,
   micEnabled = true,
   isActiveSpeaker = false,
+  handRaised = false,
+  isScreenShare = false,
+  playAudio = true,
   onSelect,
 }) {
   const videoRef = useRef(null);
@@ -42,6 +45,14 @@ export default function VideoCard({
   const [isAudioActive, setIsAudioActive] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioContextRef = useRef(null);
+
+  // Un écran partagé doit être lisible dans son intégralité : le recadrage en
+  // `cover`, correct pour un visage, ampute les bords d'un bureau — le plus
+  // souvent là où se trouve justement ce qu'on veut montrer. On affiche donc
+  // en `contain` par défaut, et on laisse la personne remplir la vue si elle
+  // préfère zoomer sur le contenu.
+  const [fillScreenShare, setFillScreenShare] = useState(false);
+  const useContain = isScreenShare && !fillScreenShare;
 
   useEffect(() => {
     if (!stream) {
@@ -85,7 +96,7 @@ export default function VideoCard({
       playVideo();
     }
 
-    if (!isLocal && audioRef.current && stream.getAudioTracks().length > 0) {
+    if (!isLocal && playAudio && audioRef.current && stream.getAudioTracks().length > 0) {
       audioRef.current.srcObject = stream;
     }
 
@@ -102,9 +113,12 @@ export default function VideoCard({
       if (videoRef.current) videoRef.current.srcObject = null;
       if (audioRef.current) audioRef.current.srcObject = null;
     };
-  }, [stream, isLocal, videoEnabled, micEnabled]);
+  }, [stream, isLocal, videoEnabled, micEnabled, playAudio]);
 
   useEffect(() => {
+    // Volontairement non conditionné à `playAudio` : l'analyseur ne produit
+    // aucun son, il ne fait que mesurer. Le désactiver sur la grande vue lui
+    // ferait perdre son anneau d'intervenant actif.
     if (!stream || !isAudioActive) {
       setIsSpeaking(false);
       return;
@@ -166,6 +180,26 @@ export default function VideoCard({
         </div>
       )}
 
+      {/* Main levée — visible directement sur la tuile, comme sur Zoom ou
+          Teams. L'anneau ambré permet de la repérer d'un coup d'œil dans une
+          grille, sans avoir à ouvrir la liste des participants. */}
+      {handRaised && (
+        <>
+          <div className="absolute inset-0 z-30 pointer-events-none rounded-[inherit] border-2 border-amber-500" />
+          {/* Sur la grande vue, le coin haut-gauche est déjà pris par
+              « INTERVENANT ACTIF » : la main y est rendue dans la ligne du nom,
+              plus bas. Sur une vignette, le coin suffit. */}
+          {!isStage && (
+            <span
+              className="absolute z-30 top-1.5 right-1.5 w-6 h-6 rounded-full bg-amber-500 text-ink-950 flex items-center justify-center animate-pulse"
+              title="A levé la main"
+            >
+              <Hand className="h-3.5 w-3.5" />
+            </span>
+          )}
+        </>
+      )}
+
       <div className="absolute inset-0 w-full h-full flex items-center justify-center z-0">
         <span
           className={`rounded-full bg-white/10 flex items-center justify-center font-mono font-bold text-white/90 ${
@@ -181,12 +215,29 @@ export default function VideoCard({
         autoPlay
         playsInline
         muted={isLocal}
-        className={`absolute inset-0 w-full h-full object-cover z-10 transition-opacity duration-300 ${
-          isVideoActive ? 'opacity-100' : 'opacity-0'
-        } ${isLocal ? 'scale-x-[-1]' : ''}`}
+        className={`absolute inset-0 w-full h-full z-10 transition-opacity duration-300 ${
+          useContain ? 'object-contain' : 'object-cover'
+        } ${isVideoActive ? 'opacity-100' : 'opacity-0'} ${
+          // Le miroir n'a de sens que pour sa propre caméra : appliqué à un
+          // partage d'écran, il rendait tout le texte illisible à l'envers.
+          isLocal && !isScreenShare ? 'scale-x-[-1]' : ''
+        }`}
       />
 
-      {!isLocal && <audio ref={audioRef} autoPlay playsInline className="hidden" />}
+      {isScreenShare && isStage && (
+        <button
+          onClick={(event) => {
+            event.stopPropagation();
+            setFillScreenShare((fill) => !fill);
+          }}
+          title={fillScreenShare ? "Afficher l'écran en entier" : 'Remplir la vue (zoom)'}
+          className="absolute top-3 right-3 z-30 w-8 h-8 rounded-md bg-black/50 hover:bg-black/70 text-white flex items-center justify-center transition-colors"
+        >
+          {fillScreenShare ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+        </button>
+      )}
+
+      {!isLocal && playAudio && <audio ref={audioRef} autoPlay playsInline className="hidden" />}
 
       {isStage ? (
         <>
@@ -203,6 +254,15 @@ export default function VideoCard({
             {!isAudioActive && (
               <span className="flex items-center justify-center w-6 h-6 rounded-full bg-danger-500/20">
                 <MicOff className="h-3 w-3 text-danger-500" />
+              </span>
+            )}
+            {handRaised && (
+              <span
+                className="flex items-center gap-1.5 h-6 px-2 rounded-full bg-amber-500 text-ink-950 font-mono text-[10px] font-bold animate-pulse"
+                title="A levé la main"
+              >
+                <Hand className="h-3.5 w-3.5" />
+                MAIN LEVÉE
               </span>
             )}
           </div>
