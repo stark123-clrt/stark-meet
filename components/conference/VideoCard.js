@@ -54,6 +54,56 @@ export default function VideoCard({
   const [fillScreenShare, setFillScreenShare] = useState(false);
   const useContain = isScreenShare && !fillScreenShare;
 
+  // Identité de la piste vidéo réellement affichée. Couper puis rallumer sa
+  // caméra, ou basculer en partage d'écran, remplace la piste à l'intérieur du
+  // même objet MediaStream : son identité ne change pas, l'effet de
+  // branchement ne se rejouerait donc pas. Certains navigateurs (Safari en
+  // particulier) n'affichent pas une piste ajoutée après coup à un flux déjà
+  // attaché — d'où ce marqueur, qui déclenche un rebranchement quand la piste
+  // change vraiment, et seulement dans ce cas.
+  const videoTrackId = stream?.getVideoTracks()[0]?.id || null;
+
+  // ---- Branchement du flux sur les balises média ----
+  // Cet effet ne dépend QUE du flux lui-même. Il incluait auparavant
+  // `videoEnabled` et `micEnabled` : couper son micro rejouait donc tout
+  // l'effet, dont le nettoyage remet `srcObject` à null — la vidéo était
+  // réellement débranchée puis rebranchée, d'où un clignotement de l'image à
+  // chaque clic sur le micro.
+  useEffect(() => {
+    if (!stream) return;
+
+    const videoElement = videoRef.current;
+    const audioElement = audioRef.current;
+
+    if (videoElement && stream.getVideoTracks().length > 0) {
+      videoElement.srcObject = stream;
+      const playVideo = async () => {
+        try {
+          await videoElement.play();
+        } catch (e) {
+          if (e.name !== 'AbortError') {
+            setTimeout(() => {
+              if (videoElement && videoElement.srcObject) videoElement.play().catch(() => {});
+            }, 500);
+          }
+        }
+      };
+      playVideo();
+    }
+
+    if (!isLocal && playAudio && audioElement && stream.getAudioTracks().length > 0) {
+      audioElement.srcObject = stream;
+    }
+
+    return () => {
+      if (videoElement) videoElement.srcObject = null;
+      if (audioElement) audioElement.srcObject = null;
+    };
+  }, [stream, isLocal, playAudio, videoTrackId]);
+
+  // ---- Lecture de l'état des pistes ----
+  // Purement calculatoire : ne touche à aucune balise média, peut donc se
+  // rejouer aussi souvent que nécessaire sans interrompre la lecture.
   useEffect(() => {
     if (!stream) {
       setIsVideoActive(false);
@@ -79,27 +129,6 @@ export default function VideoCard({
 
     updateTrackStates();
 
-    if (videoRef.current && stream.getVideoTracks().length > 0) {
-      const videoElement = videoRef.current;
-      videoElement.srcObject = stream;
-      const playVideo = async () => {
-        try {
-          await videoElement.play();
-        } catch (e) {
-          if (e.name !== 'AbortError') {
-            setTimeout(() => {
-              if (videoElement && videoElement.srcObject) videoElement.play().catch(() => {});
-            }, 500);
-          }
-        }
-      };
-      playVideo();
-    }
-
-    if (!isLocal && playAudio && audioRef.current && stream.getAudioTracks().length > 0) {
-      audioRef.current.srcObject = stream;
-    }
-
     stream.addEventListener('addtrack', updateTrackStates);
     stream.addEventListener('removetrack', updateTrackStates);
 
@@ -110,10 +139,8 @@ export default function VideoCard({
       stream.removeEventListener('addtrack', updateTrackStates);
       stream.removeEventListener('removetrack', updateTrackStates);
       if (interval) clearInterval(interval);
-      if (videoRef.current) videoRef.current.srcObject = null;
-      if (audioRef.current) audioRef.current.srcObject = null;
     };
-  }, [stream, isLocal, videoEnabled, micEnabled, playAudio]);
+  }, [stream, isLocal, videoEnabled, micEnabled]);
 
   useEffect(() => {
     // Volontairement non conditionné à `playAudio` : l'analyseur ne produit

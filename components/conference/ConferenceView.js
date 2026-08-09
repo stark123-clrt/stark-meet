@@ -16,6 +16,7 @@ import {
   Copy,
   Check,
   Users,
+  X,
 } from 'lucide-react';
 import VideoGrid from './VideoGrid';
 import SidePanel from './SidePanel';
@@ -81,6 +82,8 @@ export default function ConferenceView({
     remoteScreenShares,
     isForceMuted: isForceMutedBySignal,
     error,
+    clearError,
+    canShareScreen,
     joinMeeting,
     leaveMeeting,
     toggleMic,
@@ -106,6 +109,15 @@ export default function ConferenceView({
   const leaveMeetingRef = useRef(leaveMeeting);
   leaveMeetingRef.current = leaveMeeting;
   useEffect(() => () => leaveMeetingRef.current?.(), []);
+
+  // Un message d'erreur ne doit pas rester affiché pour le reste de la
+  // réunion : il concerne une action ponctuelle qui a échoué. Il s'efface
+  // seul, et reste fermable à la main entre-temps.
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => clearError?.(), 8000);
+    return () => clearTimeout(timer);
+  }, [error, clearError]);
 
   useEffect(() => {
     if (isConnected && !joinedAtRef.current) joinedAtRef.current = Date.now();
@@ -224,8 +236,15 @@ export default function ConferenceView({
       </header>
 
       {error && (
-        <div className="flex-none bg-signal-500/10 border-b border-signal-500/20 text-signal-300 px-5 py-2 text-sm">
-          {error}
+        <div className="flex-none flex items-start gap-3 bg-signal-500/10 border-b border-signal-500/20 text-signal-300 px-5 py-2 text-sm">
+          <span className="flex-1">{error}</span>
+          <button
+            onClick={clearError}
+            title="Masquer"
+            className="flex-none p-0.5 rounded hover:bg-white/10 text-signal-300/70 hover:text-signal-300 transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
@@ -298,8 +317,13 @@ export default function ConferenceView({
 
           <button
             onClick={isScreenSharing ? stopScreenShare : startScreenShare}
-            title="Partager l'écran"
-            className={isScreenSharing ? accentCtrlClass(true) : ctrlClass(true)}
+            disabled={!canShareScreen && !isScreenSharing}
+            title={
+              canShareScreen
+                ? "Partager l'écran"
+                : "Partage d'écran indisponible sur ce navigateur — utilisez un ordinateur"
+            }
+            className={`${isScreenSharing ? accentCtrlClass(true) : ctrlClass(true)} disabled:opacity-30 disabled:cursor-not-allowed`}
           >
             {isScreenSharing ? <MonitorOff className="h-5 w-5" /> : <Monitor className="h-5 w-5" />}
           </button>

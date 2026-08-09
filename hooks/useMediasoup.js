@@ -55,6 +55,13 @@ export default function useMediasoup(meetingId, userId, userName) {
     setLocalStream(stream);
   }, []);
 
+  const clearError = useCallback(() => setError(null), []);
+
+  // Le partage d'écran n'existe pas sur mobile : le bouton doit le refléter
+  // plutôt que de proposer une action vouée à échouer.
+  const canShareScreen =
+    typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
+
   const markRemoteMedia = useCallback((peerId, kind, paused) => {
     if (!peerId || !kind) return;
     const field = kind === 'audio' ? 'audioPaused' : 'videoPaused';
@@ -880,6 +887,14 @@ export default function useMediasoup(meetingId, userId, userName) {
    * côté et restaurée à l'arrêt du partage.
    */
   const startScreenShare = useCallback(async () => {
+    // Safari iOS et la plupart des navigateurs mobiles n'implémentent tout
+    // simplement pas getDisplayMedia : mieux vaut l'annoncer que laisser
+    // l'appel échouer sur une erreur technique incompréhensible.
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      setError("Le partage d'écran n'est pas disponible sur ce navigateur. Essayez depuis un ordinateur.");
+      return;
+    }
+
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 15 } },
@@ -970,6 +985,8 @@ export default function useMediasoup(meetingId, userId, userName) {
     remoteScreenShares,
     isForceMuted,
     error,
+    clearError,
+    canShareScreen,
     joinMeeting,
     leaveMeeting,
     toggleMic,
