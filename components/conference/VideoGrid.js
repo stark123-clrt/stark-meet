@@ -191,29 +191,39 @@ export default function VideoGrid({
   return (
     <div className="flex-1 flex flex-col min-h-0 p-3 sm:p-5">
       <div ref={gridRef} className="flex-1 min-h-0 flex items-center justify-center">
-        {layout && (
-          <div
-            className="grid"
-            style={{
-              gridTemplateColumns: `repeat(${layout.cols}, ${layout.tileWidth}px)`,
-              gap: `${TILE_GAP}px`,
-            }}
-          >
-            {tiles.map((tile) => (
-              <div
-                key={tile.tileId}
-                style={{ width: layout.tileWidth, height: layout.tileHeight }}
-              >
-                <TileWithPin
-                  tile={tile}
-                  variant="grid"
-                  isPinned={false}
-                  onTogglePin={() => togglePin(tile.tileId)}
-                />
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Repli en grille CSS tant que le conteneur n'est pas mesuré (premier
+            rendu, ou navigateur sans ResizeObserver). Sans lui, un échec de
+            mesure ne donnerait aucune tuile — donc ni image ni son, puisque
+            les balises <audio> vivent dans les tuiles. */}
+        <div
+          className={layout ? 'grid' : 'grid w-full max-h-full overflow-y-auto scrollbar-hide'}
+          style={
+            layout
+              ? {
+                  gridTemplateColumns: `repeat(${layout.cols}, ${layout.tileWidth}px)`,
+                  gap: `${TILE_GAP}px`,
+                }
+              : {
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                  gap: `${TILE_GAP}px`,
+                }
+          }
+        >
+          {tiles.map((tile) => (
+            <div
+              key={tile.tileId}
+              className={layout ? undefined : 'aspect-video'}
+              style={layout ? { width: layout.tileWidth, height: layout.tileHeight } : undefined}
+            >
+              <TileWithPin
+                tile={tile}
+                variant="grid"
+                isPinned={false}
+                onTogglePin={() => togglePin(tile.tileId)}
+              />
+            </div>
+          ))}
+        </div>
       </div>
 
       {tiles.length === 1 && (
