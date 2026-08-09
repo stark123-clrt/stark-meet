@@ -182,6 +182,10 @@ export default function VideoCard({
   }, [stream, isAudioActive]);
 
   const isStage = variant === 'stage';
+  // 'grid' occupe tout son conteneur (dimensionné au pixel par VideoGrid),
+  // mais garde les habillages compacts d'une vignette : le bandeau
+  // « INTERVENANT ACTIF » n'a de sens que sur une mise en avant unique.
+  const fillsContainer = isStage || variant === 'grid';
   const initials = initialsOf(participant?.name);
   const bg = gradientFor(participant?.id || participant?.name || 'x');
   const isHost = participant?.role === 'host';
@@ -191,7 +195,7 @@ export default function VideoCard({
     <div
       onClick={onSelect}
       className={`relative overflow-hidden bg-ink-850 ${
-        isStage
+        fillsContainer
           ? 'w-full h-full rounded-xl'
           : 'flex-none w-[132px] sm:w-[176px] aspect-[16/10] rounded-lg cursor-pointer'
       }`}

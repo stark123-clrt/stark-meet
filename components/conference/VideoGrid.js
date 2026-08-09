@@ -1,14 +1,29 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { User } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Pin, PinOff, MonitorUp } from 'lucide-react';
 import VideoCard from './VideoCard';
+import useElementSize from '@/hooks/useElementSize';
+import { bestGridLayout } from '@/lib/gridLayout';
+
+const TILE_GAP = 12;
 
 /**
- * VideoGrid — scène principale (le participant "à l'écran") + bandeau de
- * vignettes cliquables en dessous pour changer qui est mis en avant.
- * Reproduit la mise en page du template Claude Design (spotlight + filmstrip)
- * plutôt qu'une grille uniforme.
+ * VideoGrid — disposition de la scène.
+ *
+ * Trois modes, dans cet ordre de priorité :
+ *
+ *  1. Épinglage manuel — l'utilisateur a explicitement choisi qui regarder.
+ *     Décision purement locale : rien n'est envoyé au serveur, les autres
+ *     participants gardent leur propre disposition.
+ *  2. Partage d'écran — mis en avant automatiquement. Un écran partagé
+ *     contient du texte, illisible dans une petite tuile ; l'égalité devient
+ *     contre-productive à ce moment précis.
+ *  3. Grille égalitaire — le défaut. Tout le monde à la même taille.
+ *
+ * Quand un partage démarre, un épinglage en cours est levé pour que la
+ * présentation soit vue ; l'utilisateur peut ensuite ré-épingler qui il veut,
+ * et son choix explicite prime alors sur l'automatisme.
  */
 export default function VideoGrid({
   participants,
@@ -42,6 +57,8 @@ export default function VideoGrid({
         isLocal: true,
         handRaised: !!raisedHands?.[currentUserId],
         isScreenShare: !!isScreenSharing,
+        micEnabled: isMicOn,
+        videoEnabled: isVideoOn,
       });
     }
 
@@ -59,38 +76,55 @@ export default function VideoGrid({
         stream,
         isLocal: false,
         handRaised: !!raisedHands?.[peerInfo?.userId],
+        isScreenShare: !!remoteScreenShares?.[peerId],
         // `force_muted` en base couvre le cas où l'hôte coupe quelqu'un qui
         // n'a pas encore de flux audio actif.
         micEnabled: !media.audioPaused && !matched?.force_muted,
         videoEnabled: !media.videoPaused,
-        isScreenShare: !!remoteScreenShares?.[peerId],
       });
     });
 
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [participants, remotePeers, remoteStreams, localStream, currentUserId, raisedHands, remoteMediaState, remoteScreenShares, isScreenSharing]);
+  }, [
+    participants, remotePeers, remoteStreams, localStream, currentUserId,
+    raisedHands, remoteMediaState, remoteScreenShares, isScreenSharing, isMicOn, isVideoOn,
+  ]);
 
-  const [activeId, setActiveId] = useState(null);
+  const [pinnedId, setPinnedId] = useState(null);
 
+  const sharingTile = tiles.find((t) => t.isScreenShare) || null;
+
+  // Un partage qui démarre lève l'épinglage en cours : sans ça, quelqu'un qui
+  // avait épinglé un visage ne verrait jamais la présentation commencer.
+  // Ré-épingler ensuite reste possible, et reprend la main.
+  const previousSharingIdRef = useRef(null);
   useEffect(() => {
-    if (tiles.length === 0) return;
-    if (!tiles.some((t) => t.tileId === activeId)) {
-      const firstRemote = tiles.find((t) => !t.isLocal);
-      setActiveId((firstRemote || tiles[0]).tileId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tiles]);
+    const sharingId = sharingTile?.tileId || null;
+    if (sharingId && sharingId !== previousSharingIdRef.current) setPinnedId(null);
+    previousSharingIdRef.current = sharingId;
+  }, [sharingTile?.tileId]);
 
-  const active = tiles.find((t) => t.tileId === activeId) || tiles[0];
-  const remoteCount = tiles.filter((t) => !t.isLocal).length;
+  // Un épinglage sur quelqu'un qui a quitté la salle doit se lever tout seul.
+  const pinnedTile = tiles.find((t) => t.tileId === pinnedId) || null;
+  const spotlightTile = pinnedTile || sharingTile;
 
-  if (!active) {
+  const togglePin = (tileId) => setPinnedId((current) => (current === tileId ? null : tileId));
+
+  const [gridRef, gridSize] = useElementSize();
+  const layout = bestGridLayout({
+    count: tiles.length,
+    width: gridSize.width,
+    height: gridSize.height,
+    gap: TILE_GAP,
+  });
+
+  if (tiles.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center h-full">
         <div className="text-center">
           <div className="w-16 h-16 rounded-full bg-ink-800 flex items-center justify-center mx-auto mb-4 border border-ink-700">
-            <User className="h-7 w-7 text-ink-500" />
+            <MonitorUp className="h-7 w-7 text-ink-500" />
           </div>
           <p className="text-mist-300 text-base font-medium">Connexion à la réunion…</p>
         </div>
@@ -98,54 +132,135 @@ export default function VideoGrid({
     );
   }
 
-  return (
-    <div className="flex-1 flex flex-col min-h-0 pt-3 sm:pt-5 px-3 sm:px-5">
-      <div className="flex-1 min-h-0">
-        <VideoCard
-          key={active.tileId}
-          variant="stage"
-          participant={active.participant}
-          stream={active.stream}
-          isLocal={active.isLocal}
-          videoEnabled={active.isLocal ? isVideoOn : active.videoEnabled}
-          micEnabled={active.isLocal ? isMicOn : active.micEnabled}
-          handRaised={active.handRaised}
-          isScreenShare={active.isScreenShare}
-          // La personne à l'écran est AUSSI rendue dans le bandeau de
-          // vignettes en dessous : sans cette garde, son flux audio était joué
-          // par deux éléments <audio> à la fois, produisant un filtrage en
-          // peigne — le son « deux micros côte à côte ». C'est la vignette qui
-          // porte l'audio, elle est toujours présente quand il y a du distant.
-          playAudio={false}
-        />
-      </div>
+  // ---- Mode mise en avant (épinglage ou partage d'écran) ----
+  if (spotlightTile) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0 pt-3 sm:pt-5 px-3 sm:px-5">
+        <div className="flex-none flex items-center gap-2 pb-2">
+          {pinnedTile ? (
+            <button
+              onClick={() => setPinnedId(null)}
+              className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-signal-300 bg-signal-500/12 border border-signal-500/35 rounded px-2.5 py-1 hover:bg-signal-500/20 transition-colors"
+            >
+              <PinOff className="h-3 w-3" />
+              ÉPINGLÉ · DÉTACHER
+            </button>
+          ) : (
+            <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-amber-500 bg-amber-500/10 border border-amber-500/28 rounded px-2.5 py-1">
+              <MonitorUp className="h-3 w-3" />
+              PARTAGE D&apos;ÉCRAN
+            </span>
+          )}
+        </div>
 
-      {remoteCount > 0 && (
+        <div className="flex-1 min-h-0">
+          <VideoCard
+            key={spotlightTile.tileId}
+            variant="stage"
+            participant={spotlightTile.participant}
+            stream={spotlightTile.stream}
+            isLocal={spotlightTile.isLocal}
+            videoEnabled={spotlightTile.videoEnabled}
+            micEnabled={spotlightTile.micEnabled}
+            handRaised={spotlightTile.handRaised}
+            isScreenShare={spotlightTile.isScreenShare}
+            // La personne mise en avant est AUSSI dans le bandeau du bas :
+            // c'est la vignette qui porte l'audio, sinon le flux serait joué
+            // deux fois et sonnerait dédoublé.
+            playAudio={false}
+          />
+        </div>
+
         <div className="flex-none flex gap-2.5 sm:gap-3 py-3 sm:py-4 overflow-x-auto scrollbar-hide">
-          {tiles.map((t) => (
-            <VideoCard
-              key={t.tileId}
+          {tiles.map((tile) => (
+            <TileWithPin
+              key={tile.tileId}
+              tile={tile}
               variant="tile"
-              participant={t.participant}
-              stream={t.stream}
-              isLocal={t.isLocal}
-              videoEnabled={t.isLocal ? isVideoOn : t.videoEnabled}
-              micEnabled={t.isLocal ? isMicOn : t.micEnabled}
-              handRaised={t.handRaised}
-              isScreenShare={t.isScreenShare}
-              isActiveSpeaker={t.tileId === active.tileId}
-              onSelect={() => setActiveId(t.tileId)}
+              isPinned={pinnedId === tile.tileId}
+              isSpotlighted={tile.tileId === spotlightTile.tileId}
+              onTogglePin={() => togglePin(tile.tileId)}
             />
           ))}
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {remoteCount === 0 && (
-        <div className="flex-none py-4 sm:py-5 text-center">
-          <p className="text-mist-300 text-sm font-medium">En attente d'autres participants…</p>
+  // ---- Mode grille égalitaire ----
+  return (
+    <div className="flex-1 flex flex-col min-h-0 p-3 sm:p-5">
+      <div ref={gridRef} className="flex-1 min-h-0 flex items-center justify-center">
+        {layout && (
+          <div
+            className="grid"
+            style={{
+              gridTemplateColumns: `repeat(${layout.cols}, ${layout.tileWidth}px)`,
+              gap: `${TILE_GAP}px`,
+            }}
+          >
+            {tiles.map((tile) => (
+              <div
+                key={tile.tileId}
+                style={{ width: layout.tileWidth, height: layout.tileHeight }}
+              >
+                <TileWithPin
+                  tile={tile}
+                  variant="grid"
+                  isPinned={false}
+                  onTogglePin={() => togglePin(tile.tileId)}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {tiles.length === 1 && (
+        <div className="flex-none pt-3 text-center">
+          <p className="text-mist-300 text-sm font-medium">En attente d&apos;autres participants…</p>
           <p className="text-ink-500 text-xs mt-1">Partagez le code ou le lien de la réunion.</p>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Une tuile et son bouton d'épinglage. Le bouton vit ici plutôt que dans
+ * VideoCard : celui-ci se contente d'afficher un participant, la disposition
+ * et les interactions qui la modifient restent l'affaire de VideoGrid.
+ */
+function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, onTogglePin }) {
+  return (
+    // La vignette se dimensionne d'elle-même (largeur fixe + format) ; la
+    // tuile de grille, elle, remplit la boîte calculée par le parent.
+    <div className={`relative group ${variant === 'tile' ? 'flex-none' : 'w-full h-full'}`}>
+      <VideoCard
+        variant={variant}
+        participant={tile.participant}
+        stream={tile.stream}
+        isLocal={tile.isLocal}
+        videoEnabled={tile.videoEnabled}
+        micEnabled={tile.micEnabled}
+        handRaised={tile.handRaised}
+        isScreenShare={tile.isScreenShare}
+        isActiveSpeaker={isSpotlighted}
+      />
+
+      <button
+        onClick={onTogglePin}
+        title={isPinned ? 'Détacher' : 'Épingler en grand'}
+        // Haut-centre : les quatre coins sont déjà pris (HÔTE, main levée,
+        // micro coupé) et se chevaucheraient.
+        className={`absolute top-1.5 left-1/2 -translate-x-1/2 z-40 w-7 h-7 rounded-md flex items-center justify-center transition-all ${
+          isPinned
+            ? 'bg-signal-500 text-white opacity-100'
+            : 'bg-black/55 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-black/75'
+        }`}
+      >
+        {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+      </button>
     </div>
   );
 }
