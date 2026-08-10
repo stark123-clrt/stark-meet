@@ -48,7 +48,10 @@ export default function EmojiPickerPanel({ onSelect, onClose, align = 'right' })
         data={data}
         i18n={i18n}
         locale="fr"
-        theme="dark"
+        // emoji-mart s'habille lui-même, dans un shadow DOM : ses couleurs
+        // échappent aux tokens Tailwind. Ce réglage est donc le seul moyen de
+        // l'accorder au thème clair du reste de l'application.
+        theme="light"
         set="native"
         previewPosition="none"
         skinTonePosition="search"
