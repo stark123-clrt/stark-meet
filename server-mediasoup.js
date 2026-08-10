@@ -24,6 +24,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const mediasoup = require('mediasoup');
+const transcriptionFork = require('./transcription-fork');
 
 const app = express();
 const server = http.createServer(app);
@@ -47,6 +48,13 @@ console.log('🔧 Socket.io configuré avec CORS pour:', process.env.CLIENT_URL 
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', server: 'mediasoup' });
+});
+
+// État des forks de transcription. `leaked` doit rester à 0 : c'est le critère
+// d'acceptation du jalon 1, une fuite de port étant une panne qui n'apparaît
+// qu'après plusieurs réunions.
+app.get('/transcription/stats', (req, res) => {
+  res.json(transcriptionFork.getStats());
 });
 
 app.use(express.json());
@@ -341,6 +349,7 @@ io.on('connection', (socket) => {
 
       producer.on('transportclose', () => {
         console.log(`🚫 Transport fermé pour producer ${producer.id}`);
+        transcriptionFork.stopFork(producer.id);
         producer.close();
         peer.producers.delete(producer.id);
       });
@@ -352,6 +361,21 @@ io.on('connection', (socket) => {
         kind,
         paused: producer.paused,
       });
+
+      // Fork de transcription — désactivé par défaut, et volontairement hors du
+      // chemin critique : jamais attendu, jamais capable de faire échouer la
+      // production. Si le fork casse, la visio continue.
+      if (kind === 'audio' && transcriptionFork.ENABLED) {
+        transcriptionFork
+          .startFork({
+            router: room.router,
+            producerId: producer.id,
+            meetingId: socket.meetingId,
+            speakerName: peer.userName,
+            participantId: peer.userId,
+          })
+          .catch((err) => console.error('🎙️ Fork non démarré:', err));
+      }
 
       console.log(`🎬 Producer créé: ${producer.id} (${kind}) par ${peer.userName}`);
 
@@ -438,6 +462,7 @@ io.on('connection', (socket) => {
 
       const producer = peer.producers.get(producerId);
       if (producer) {
+        transcriptionFork.stopFork(producerId);
         producer.close();
         peer.producers.delete(producerId);
 
@@ -762,6 +787,7 @@ function cleanupPeer(socket) {
       producerId: producer.id,
       peerId: socket.id,
     });
+    transcriptionFork.stopFork(producer.id);
     producer.close();
   });
 
@@ -776,6 +802,11 @@ function cleanupPeer(socket) {
   console.log(`👋 ${peer.userName} a quitté la salle ${socket.meetingId}`);
 
   if (room.peers.size === 0) {
+    // Avant de fermer le router : ffmpeg doit recevoir un SIGTERM pour
+    // finaliser l'en-tête de son WAV. Fermer le router d'abord tronquerait le
+    // fichier, et le rendrait illisible.
+    transcriptionFork.stopMeetingForks(socket.meetingId);
+
     room.router.close();
     rooms.delete(socket.meetingId);
     console.log('🗑️ Room supprimée:', socket.meetingId);

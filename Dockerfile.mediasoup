@@ -1,12 +1,14 @@
 # Dockerfile pour le serveur Mediasoup
 FROM node:18
 
-# Installer les dépendances système pour Mediasoup
+# Dépendances système. `ffmpeg` sert au fork RTP de transcription : il reçoit le
+# flux Opus du SFU et le convertit en PCM 16 kHz mono.
 RUN apt-get update && apt-get install -y \
     build-essential \
     python3 \
     python3-pip \
     net-tools \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,8 +19,10 @@ COPY package*.json ./
 # Installer les dépendances (inclut mediasoup)
 RUN npm ci --only=production
 
-# Copier le serveur Mediasoup
-COPY server-mediasoup.js ./
+# Copier le serveur Mediasoup et ses modules. Lister les fichiers un à un est
+# une source d'oubli : un nouveau module absent de l'image provoque un
+# « Cannot find module » au démarrage, après un déploiement complet.
+COPY server-mediasoup.js transcription-fork.js ./
 
 # Exposer les ports
 EXPOSE 3001
