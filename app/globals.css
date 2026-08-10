@@ -2,20 +2,36 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --ink-950: #0e1116;
-  --ink-900: #161b23;
-  --signal-500: #ff5a36;
-}
-
+/* Thème clair du template : fond #FAFAFA, texte quasi noir — jamais du noir
+   pur, conformément au système de design. La page réunion pose son propre fond
+   (canvas #F1F2F6), plus soutenu. */
 html,
 body {
   height: 100%;
   margin: 0;
-  background: var(--ink-950);
-  color: #eef0f4;
+  background: #fafafa;
+  color: #0a0a0a;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* Barre de défilement fine du template. */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d7d7de;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Masque la barre là où le template la supprime (bandeaux de vignettes,
+   listes de messages). */
 .scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -23,4 +39,12 @@ body {
 
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* Trame de points du haut de la landing, atténuée en ellipse vers les bords. */
+.hero-dots {
+  background-image: radial-gradient(#e8e8ec 1px, transparent 1px);
+  background-size: 18px 18px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000 40%, transparent 100%);
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000 40%, transparent 100%);
 }
