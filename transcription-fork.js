@@ -27,9 +27,24 @@ const { spawn } = require('child_process');
 
 const ENABLED = process.env.TRANSCRIPTION_FORK_ENABLED === 'true';
 
-// Plage dédiée. `rtcpMux` étant actif, un fork ne consomme qu'un seul port.
+// DEUX plages distinctes, et c'est nécessaire : un fork met en jeu deux ports.
+//
+//  · celui où **ffmpeg écoute** — la destination du RTP, écrite dans le SDP ;
+//  · celui que **mediasoup lie** pour émettre — la source.
+//
+// Les confondre les met en conflit : les deux processus tentent de lier le même
+// port et le second échoue.
 const MIN_PORT = Number(process.env.TRANSCRIPTION_MIN_PORT) || 51000;
 const MAX_PORT = Number(process.env.TRANSCRIPTION_MAX_PORT) || 51099;
+
+// Plage d'émission de mediasoup, laissée à sa gestion interne via `portRange`.
+// Volontairement hors de 40000-40199 (transports WebRTC) et de 50000-50500
+// (relais coturn).
+const TRANSPORT_MIN_PORT = Number(process.env.TRANSCRIPTION_TRANSPORT_MIN_PORT) || 51100;
+const TRANSPORT_MAX_PORT = Number(process.env.TRANSCRIPTION_TRANSPORT_MAX_PORT) || 51199;
+
+/** Laisse à ffmpeg le temps de lier son port avant l'arrivée du premier paquet. */
+const FFMPEG_BIND_DELAY_MS = 300;
 
 const OUTPUT_DIR = process.env.TRANSCRIPTION_OUTPUT_DIR
   || path.join(os.tmpdir(), 'stark-meet-forks');
@@ -131,8 +146,14 @@ async function startFork({ router, producerId, meetingId, speakerName, participa
   try {
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
+    // mediasoup choisit lui-même son port d'émission dans sa propre plage : le
+    // port alloué plus haut est celui de ffmpeg, pas le sien.
     transport = await router.createPlainTransport({
-      listenInfo: { protocol: 'udp', ip: '127.0.0.1', port },
+      listenInfo: {
+        protocol: 'udp',
+        ip: '127.0.0.1',
+        portRange: { min: TRANSPORT_MIN_PORT, max: TRANSPORT_MAX_PORT },
+      },
       rtcpMux: true,
       comedia: false,
     });
@@ -159,9 +180,28 @@ async function startFork({ router, producerId, meetingId, speakerName, participa
       if (line) console.log(`🎙️ ffmpeg[${producerId.slice(0, 8)}] ${line}`);
     });
 
+    // Sans ce gestionnaire, un binaire ffmpeg absent émettrait un événement
+    // 'error' sans écouteur — ce qui, sur un ChildProcess, fait tomber tout le
+    // serveur. Le découplage exige que ce module ne puisse jamais interrompre
+    // la visio.
+    ffmpeg.on('error', (err) => {
+      console.error(`🎙️ ffmpeg introuvable ou non exécutable: ${err.message}`);
+      stopFork(producerId);
+    });
+
     ffmpeg.on('exit', (code, signal) => {
       console.log(`🎙️ ffmpeg terminé (code ${code}, signal ${signal}) — ${wavPath}`);
     });
+
+    // Laisse ffmpeg lier son port : les premiers paquets envoyés avant son
+    // écoute reviendraient en « port unreachable ».
+    await new Promise((resolve) => setTimeout(resolve, FFMPEG_BIND_DELAY_MS));
+
+    // ⚠️ L'appel manquant sans lequel rien ne fonctionne. Avec `comedia: false`,
+    // mediasoup n'infère pas la destination : il faut la lui donner, sinon il
+    // n'émet aucun paquet — et ffmpeg attend indéfiniment un flux qui ne vient
+    // pas, sans même créer son fichier de sortie.
+    await transport.connect({ ip: '127.0.0.1', port });
 
     await consumer.resume();
 
@@ -255,6 +295,8 @@ function getStats() {
     activeForks: forks.size,
     portsFree: freePorts.length,
     portsTotal: MAX_PORT - MIN_PORT + 1,
+    ffmpegPortRange: `${MIN_PORT}-${MAX_PORT}`,
+    transportPortRange: `${TRANSPORT_MIN_PORT}-${TRANSPORT_MAX_PORT}`,
     outputDir: OUTPUT_DIR,
     ...stats,
     leaked: stats.allocated - stats.released - forks.size,
