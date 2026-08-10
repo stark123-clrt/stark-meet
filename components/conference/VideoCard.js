@@ -194,20 +194,20 @@ export default function VideoCard({
   return (
     <div
       onClick={onSelect}
-      className={`relative overflow-hidden bg-ink-850 ${
+      className={`relative overflow-hidden bg-stage ${
         fillsContainer
           ? 'w-full h-full rounded-xl'
           : 'flex-none w-[132px] sm:w-[176px] aspect-[16/10] rounded-lg cursor-pointer'
       }`}
       style={{
         background: bg,
-        outline: !isStage ? `2px solid ${isActiveSpeaker ? '#35d399' : 'rgba(255,255,255,0.07)'}` : undefined,
+        outline: !isStage ? `2px solid ${isActiveSpeaker ? '#10B981' : 'rgba(255,255,255,0.10)'}` : undefined,
         outlineOffset: !isStage ? '-2px' : undefined,
       }}
     >
       {isSpeaking && (
         <div className="absolute inset-0 z-30 pointer-events-none rounded-[inherit]">
-          <div className="absolute inset-0 rounded-[inherit] border-2 border-ok-500 shadow-[0_0_24px_rgba(53,211,153,0.35)]" />
+          <div className="absolute inset-0 rounded-[inherit] border-2 border-success-500 shadow-[0_0_24px_rgba(16,185,129,0.35)]" />
         </div>
       )}
 
@@ -216,13 +216,13 @@ export default function VideoCard({
           grille, sans avoir à ouvrir la liste des participants. */}
       {handRaised && (
         <>
-          <div className="absolute inset-0 z-30 pointer-events-none rounded-[inherit] border-2 border-amber-500" />
+          <div className="absolute inset-0 z-30 pointer-events-none rounded-[inherit] border-2 border-warning-500" />
           {/* Sur la grande vue, le coin haut-gauche est déjà pris par
               « INTERVENANT ACTIF » : la main y est rendue dans la ligne du nom,
               plus bas. Sur une vignette, le coin suffit. */}
           {!isStage && (
             <span
-              className="absolute z-30 top-1.5 right-1.5 w-6 h-6 rounded-full bg-amber-500 text-ink-950 flex items-center justify-center animate-pulse"
+              className="absolute z-30 top-1.5 right-1.5 w-6 h-6 rounded-full bg-warning-500 text-white flex items-center justify-center animate-pulse"
               title="A levé la main"
             >
               <Hand className="h-3.5 w-3.5" />
@@ -273,23 +273,23 @@ export default function VideoCard({
       {isStage ? (
         <>
           <span className="absolute top-3 left-3 sm:top-4 sm:left-4 z-20 flex items-center gap-1.5 font-mono text-[10px] sm:text-[10.5px] font-semibold tracking-wide text-white bg-black/45 rounded px-2 py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-ok-500 inline-block" />
+            <span className="w-1.5 h-1.5 rounded-full bg-success-500 inline-block" />
             INTERVENANT ACTIF
           </span>
           <div className="absolute inset-x-0 bottom-0 h-20 sm:h-[90px] z-10 pointer-events-none bg-gradient-to-t from-black/60 to-transparent" />
           <div className="absolute left-3 bottom-2.5 sm:left-5 sm:bottom-[18px] z-20 flex items-center gap-2.5">
             <span className="text-sm sm:text-base font-semibold text-white drop-shadow">{participant?.name || 'Participant'}</span>
             {isHost && (
-              <span className="font-mono text-[9px] font-bold tracking-wide text-ink-950 bg-ok-500 rounded px-1.5 py-0.5">HÔTE</span>
+              <span className="font-mono text-[9px] font-bold tracking-wide text-white bg-success-500 rounded px-1.5 py-0.5">HÔTE</span>
             )}
             {!isAudioActive && (
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-danger-500/20">
-                <MicOff className="h-3 w-3 text-danger-500" />
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-error-500/25">
+                <MicOff className="h-3 w-3 text-error-500" />
               </span>
             )}
             {handRaised && (
               <span
-                className="flex items-center gap-1.5 h-6 px-2 rounded-full bg-amber-500 text-ink-950 font-mono text-[10px] font-bold animate-pulse"
+                className="flex items-center gap-1.5 h-6 px-2 rounded-full bg-warning-500 text-white font-mono text-[10px] font-bold animate-pulse"
                 title="A levé la main"
               >
                 <Hand className="h-3.5 w-3.5" />
@@ -305,13 +305,13 @@ export default function VideoCard({
             {shortName}
           </span>
           {isHost && (
-            <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-20 font-mono text-[8.5px] sm:text-[9px] font-bold text-ink-950 bg-ok-500 rounded px-1.5 py-0.5">
+            <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-20 font-mono text-[8.5px] sm:text-[9px] font-bold text-white bg-success-500 rounded px-1.5 py-0.5">
               HÔTE
             </span>
           )}
           {!isAudioActive && (
-            <span className="absolute right-1.5 bottom-1.5 z-20 w-5 h-5 rounded-full bg-danger-500/20 flex items-center justify-center">
-              <MicOff className="h-2.5 w-2.5 text-danger-500" />
+            <span className="absolute right-1.5 bottom-1.5 z-20 w-5 h-5 rounded-full bg-error-500/25 flex items-center justify-center">
+              <MicOff className="h-2.5 w-2.5 text-error-500" />
             </span>
           )}
         </>

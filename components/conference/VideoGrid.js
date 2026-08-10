@@ -123,10 +123,10 @@ export default function VideoGrid({
     return (
       <div className="flex-1 flex items-center justify-center h-full">
         <div className="text-center">
-          <div className="w-16 h-16 rounded-full bg-ink-800 flex items-center justify-center mx-auto mb-4 border border-ink-700">
-            <MonitorUp className="h-7 w-7 text-ink-500" />
+          <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-4">
+            <MonitorUp className="h-7 w-7 text-slate-500" />
           </div>
-          <p className="text-mist-300 text-base font-medium">Connexion à la réunion…</p>
+          <p className="text-slate-700 text-base font-medium">Connexion à la réunion…</p>
         </div>
       </div>
     );
@@ -140,13 +140,13 @@ export default function VideoGrid({
           {pinnedTile ? (
             <button
               onClick={() => setPinnedId(null)}
-              className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-signal-300 bg-signal-500/12 border border-signal-500/35 rounded px-2.5 py-1 hover:bg-signal-500/20 transition-colors"
+              className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-brand-500 bg-brand-50 border border-brand-500/30 rounded-sm px-2.5 py-1 hover:brightness-95 transition-colors"
             >
               <PinOff className="h-3 w-3" />
               ÉPINGLÉ · DÉTACHER
             </button>
           ) : (
-            <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-amber-500 bg-amber-500/10 border border-amber-500/28 rounded px-2.5 py-1">
+            <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-warning-500 bg-warning-50 border border-warning-500/25 rounded-sm px-2.5 py-1">
               <MonitorUp className="h-3 w-3" />
               PARTAGE D&apos;ÉCRAN
             </span>
@@ -228,8 +228,8 @@ export default function VideoGrid({
 
       {tiles.length === 1 && (
         <div className="flex-none pt-3 text-center">
-          <p className="text-mist-300 text-sm font-medium">En attente d&apos;autres participants…</p>
-          <p className="text-ink-500 text-xs mt-1">Partagez le code ou le lien de la réunion.</p>
+          <p className="text-slate-700 text-sm font-medium">En attente d&apos;autres participants…</p>
+          <p className="text-slate-500 text-xs mt-1">Partagez le code ou le lien de la réunion.</p>
         </div>
       )}
     </div>
@@ -265,7 +265,7 @@ function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, onToggleP
         // micro coupé) et se chevaucheraient.
         className={`absolute top-1.5 left-1/2 -translate-x-1/2 z-40 w-7 h-7 rounded-md flex items-center justify-center transition-all ${
           isPinned
-            ? 'bg-signal-500 text-white opacity-100'
+            ? 'bg-brand-500 text-white opacity-100'
             : 'bg-black/55 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-black/75'
         }`}
       >

@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Mic, MicOff, UserX, Hand } from 'lucide-react';
-import { initialsOf, avatarColorFor } from '@/lib/identity';
+import { X, Mic, MicOff, UserX, Hand, UserPlus } from 'lucide-react';
+import Avatar from '@/components/ui/Avatar';
 import useMeetingChat from '@/hooks/useMeetingChat';
 import ChatPanel from './ChatPanel';
 
@@ -46,6 +46,7 @@ export default function SidePanel({
   mobileOpen,
   onCloseMobile,
   onUnreadChange,
+  onCopyInvite,
 }) {
   const [tab, setTab] = useState('participants');
   const admitted = participants || [];
@@ -96,7 +97,7 @@ export default function SidePanel({
   return (
     <>
       {mobileOpen && (
-        <div className="fixed inset-0 z-30 bg-black/60 lg:hidden" onClick={onCloseMobile} />
+        <div className="fixed inset-0 z-30 bg-slate-950/40 lg:hidden" onClick={onCloseMobile} />
       )}
 
       {/* Sur mobile : feuille ancrée en bas, occupant 72 % de la hauteur, la
@@ -105,27 +106,27 @@ export default function SidePanel({
           discussion faisait entièrement disparaître les participants.
           Sur grand écran, rien ne change : colonne fixe de 328 px. */}
       <div
-        className={`bg-ink-900 border-t lg:border-t-0 lg:border-l border-ink-700 flex-col min-h-0
-          fixed inset-x-0 bottom-0 h-[72vh] rounded-t-2xl z-40 shadow-[0_-8px_32px_rgba(0,0,0,0.5)]
+        className={`bg-surface border-t lg:border-t-0 lg:border-l border-slate-200 flex-col min-h-0
+          fixed inset-x-0 bottom-0 h-[72vh] rounded-t-2xl z-40 shadow-overlay
           lg:static lg:z-auto lg:flex-none lg:inset-auto lg:h-auto lg:w-[328px] lg:rounded-none lg:shadow-none ${
             mobileOpen ? 'flex' : 'hidden lg:flex'
           }`}
       >
         {/* Poignée de préhension : indique que la feuille se referme. */}
         <div className="lg:hidden flex-none flex justify-center pt-2 pb-1">
-          <span className="w-9 h-1 rounded-full bg-white/20" />
+          <span className="w-9 h-1 rounded-full bg-slate-300" />
         </div>
 
-        <div className="flex flex-none items-center border-b border-ink-700">
+        <div className="flex flex-none items-center border-b border-slate-200">
           <button
             onClick={() => setTab('discussion')}
             className={`relative flex-1 text-center py-3.5 text-[13.5px] font-mono transition-colors ${
-              tab === 'discussion' ? 'text-white bg-ink-800 border-b-2 border-signal-500' : 'text-ink-500'
+              tab === 'discussion' ? 'text-slate-950 bg-slate-50 border-b-2 border-brand-500' : 'text-slate-500'
             }`}
           >
             Discussion
             {chat.unreadCount > 0 && (
-              <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-signal-500 text-white text-[10px] font-bold align-middle">
+              <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-brand-500 text-white text-[10px] font-bold align-middle">
                 {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
               </span>
             )}
@@ -133,12 +134,12 @@ export default function SidePanel({
           <button
             onClick={() => setTab('participants')}
             className={`flex-1 text-center py-3.5 text-[13.5px] font-mono transition-colors ${
-              tab === 'participants' ? 'text-white bg-ink-800 border-b-2 border-signal-500' : 'text-ink-500'
+              tab === 'participants' ? 'text-slate-950 bg-slate-50 border-b-2 border-brand-500' : 'text-slate-500'
             }`}
           >
             Participants · {totalCount}
           </button>
-          <button onClick={onCloseMobile} className="lg:hidden p-3 text-ink-500 hover:text-white flex-none">
+          <button onClick={onCloseMobile} className="lg:hidden p-3 text-slate-500 hover:text-slate-950 flex-none">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -155,6 +156,7 @@ export default function SidePanel({
             raisedHands={raisedHands}
             processingIds={processingIds}
             runAction={runAction}
+            onCopyInvite={onCopyInvite}
           />
         ) : (
           <ChatPanel
@@ -170,21 +172,7 @@ export default function SidePanel({
   );
 }
 
-/** Pastille d'initiales, colorée de façon stable — même rendu que dans le chat. */
-function Avatar({ name, seed }) {
-  const color = avatarColorFor(seed || name);
-  return (
-    <span
-      className="w-8 h-8 rounded-full font-mono text-[11px] font-bold flex items-center justify-center flex-none"
-      style={{ background: color.bg, color: color.fg }}
-      title={name}
-    >
-      {initialsOf(name)}
-    </span>
-  );
-}
-
-function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMute, onRemove, raisedHands, processingIds, runAction }) {
+function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMute, onRemove, raisedHands, processingIds, runAction, onCopyInvite }) {
   // Les mains levées passent en tête : c'est l'intérêt du geste, l'hôte doit
   // les voir sans avoir à parcourir toute la liste.
   const ordered = [...admitted].sort((a, b) => {
@@ -195,28 +183,38 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-hide p-4 flex flex-col gap-5 min-h-0">
+      {/* « Ajouter » du template : le geste concret est de copier le lien
+          d'invitation, puisqu'il n'y a pas d'annuaire à parcourir. */}
+      <button
+        onClick={onCopyInvite}
+        className="flex items-center justify-center gap-2 h-10 rounded-sm border border-slate-200 bg-surface text-[13.5px] font-medium text-slate-950 hover:bg-slate-100 transition-colors"
+      >
+        <UserPlus className="h-4 w-4 text-brand-500" />
+        Ajouter — copier le lien
+      </button>
+
       {isHost && waiting.length > 0 && (
-        <div className="flex flex-col gap-3 border border-amber-500/30 bg-amber-500/5 rounded-md p-3.5">
-          <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-amber-500">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
-            SALLE D'ATTENTE · {waiting.length}
+        <div className="flex flex-col gap-3 border border-warning-500/30 bg-warning-500/5 rounded-md p-3.5">
+          <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-warning-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-warning-500 inline-block" />
+            SALLE D&apos;ATTENTE · {waiting.length}
           </span>
           <div className="flex flex-col gap-2.5">
             {waiting.map((w) => (
               <div key={w.id} className="flex items-center gap-2.5">
                 <Avatar name={w.display_name} seed={w.profile_id || w.guest_id || w.id} />
-                <span className="flex-1 text-[13.5px] font-medium text-white truncate min-w-0">{w.display_name}</span>
+                <span className="flex-1 text-[13.5px] font-medium text-slate-950 truncate min-w-0">{w.display_name}</span>
                 <button
                   onClick={() => runAction(w.id, onAdmit)}
                   disabled={processingIds.has(w.id)}
-                  className="text-xs font-semibold px-2.5 py-1.5 rounded bg-ok-500 text-ink-950 hover:brightness-110 transition disabled:opacity-50 flex-none"
+                  className="text-xs font-semibold px-2.5 py-1.5 rounded bg-success-500 text-white hover:brightness-110 transition disabled:opacity-50 flex-none"
                 >
                   {processingIds.has(w.id) ? '…' : 'Admettre'}
                 </button>
                 <button
                   onClick={() => runAction(w.id, onDeny)}
                   disabled={processingIds.has(w.id)}
-                  className="w-7 h-7 rounded bg-white/[0.07] text-ink-500 hover:text-white transition disabled:opacity-50 flex-none flex items-center justify-center"
+                  className="w-7 h-7 rounded bg-slate-100 text-slate-500 hover:text-slate-950 transition disabled:opacity-50 flex-none flex items-center justify-center"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -227,7 +225,7 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
       )}
 
       <div className="flex flex-col gap-1">
-        <span className="font-mono text-[10.5px] font-bold tracking-wide text-ink-600 pb-2">
+        <span className="font-mono text-[10.5px] font-bold tracking-wide text-slate-500 pb-2">
           DANS LA RÉUNION · {admitted.length}
         </span>
         {ordered.map((p) => {
@@ -236,38 +234,38 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
           <div
             key={p.id}
             className={`flex items-center gap-2.5 py-2 px-1.5 rounded-md transition-colors group ${
-              handRaised ? 'bg-amber-500/10 ring-1 ring-amber-500/30' : 'hover:bg-white/[0.04]'
+              handRaised ? 'bg-warning-50 ring-1 ring-warning-500/30' : 'hover:bg-slate-50'
             }`}
           >
             <Avatar name={p.display_name} seed={p.profile_id || p.guest_id || p.id} />
             <div className="flex-1 flex items-center gap-2 min-w-0">
-              <span className="text-[13.5px] font-medium text-white truncate">{p.display_name}</span>
+              <span className="text-[13.5px] font-medium text-slate-950 truncate">{p.display_name}</span>
               {(p.role === 'host' || p.role === 'co-host') && (
-                <span className="font-mono text-[9px] font-bold tracking-wide text-ok-500 border border-ok-500/35 rounded px-1.5 py-0.5 flex-none">
+                <span className="font-mono text-[9px] font-bold tracking-wide text-success-500 border border-success-500/35 rounded px-1.5 py-0.5 flex-none">
                   {p.role === 'host' ? 'HÔTE' : 'CO-HÔTE'}
                 </span>
               )}
             </div>
             {handRaised && (
-              <span className="text-amber-500 flex-none animate-pulse" title="A levé la main">
+              <span className="text-warning-500 flex-none animate-pulse" title="A levé la main">
                 <Hand className="h-4 w-4" />
               </span>
             )}
-            <span className={p.force_muted ? 'text-danger-500' : 'text-ink-500'}>
+            <span className={p.force_muted ? 'text-error-500' : 'text-slate-500'}>
               {p.force_muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
             </span>
             {isHost && p.role !== 'host' && (
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-none">
                 <button
                   onClick={() => onForceMute?.(p.id)}
-                  className="w-[26px] h-[26px] rounded text-ink-500 hover:text-white hover:bg-white/[0.08] flex items-center justify-center"
+                  className="w-[26px] h-[26px] rounded text-slate-500 hover:text-slate-950 hover:bg-slate-100 flex items-center justify-center"
                   title={p.force_muted ? 'Réautoriser le micro' : 'Couper le micro'}
                 >
                   {p.force_muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
                 </button>
                 <button
                   onClick={() => onRemove?.(p.id)}
-                  className="w-[26px] h-[26px] rounded text-ink-500 hover:text-danger-500 hover:bg-white/[0.08] flex items-center justify-center"
+                  className="w-[26px] h-[26px] rounded text-slate-500 hover:text-error-500 hover:bg-slate-100 flex items-center justify-center"
                   title="Exclure de la réunion"
                 >
                   <UserX className="h-3.5 w-3.5" />

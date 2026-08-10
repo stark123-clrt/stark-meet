@@ -53,20 +53,20 @@ export default function AuthCallbackPage() {
   }, [router]);
 
   return (
-    <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-canvas flex items-center justify-center px-4">
       {error ? (
         <div className="text-center max-w-sm">
-          <p className="text-white font-semibold">Connexion impossible</p>
-          <p className="text-ink-500 text-sm mt-1.5">{error}</p>
+          <p className="font-display font-bold text-[18px] tracking-heading">Connexion impossible</p>
+          <p className="text-slate-500 text-sm mt-1.5">{error}</p>
           <button
             onClick={() => router.replace('/auth')}
-            className="mt-5 text-sm font-medium text-signal-400 hover:text-signal-300"
+            className="mt-5 text-sm font-medium text-brand-500 hover:text-brand-600"
           >
             Revenir à la connexion
           </button>
         </div>
       ) : (
-        <p className="text-mist-300 text-sm font-mono">Connexion en cours…</p>
+        <p className="text-slate-700 text-sm font-mono">Connexion en cours…</p>
       )}
     </div>
   );

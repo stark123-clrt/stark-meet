@@ -61,7 +61,7 @@ function renderContent(text) {
         href={part}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-signal-300 underline underline-offset-2 break-all hover:text-signal-400"
+        className="text-brand-500 underline underline-offset-2 break-all hover:text-brand-500"
       >
         {part}
       </a>
@@ -192,12 +192,12 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto scrollbar-hide px-3 py-4 flex flex-col gap-0.5"
       >
-        {loading && <p className="text-ink-500 text-sm text-center mt-8">Chargement…</p>}
+        {loading && <p className="text-slate-500 text-sm text-center mt-8">Chargement…</p>}
 
         {!loading && messages.length === 0 && (
           <div className="text-center mt-10 px-4">
-            <p className="text-mist-300 text-sm font-medium">Aucun message</p>
-            <p className="text-ink-500 text-xs mt-1.5">
+            <p className="text-slate-700 text-sm font-medium">Aucun message</p>
+            <p className="text-slate-500 text-xs mt-1.5">
               Lancez la discussion — tout le monde dans la réunion la verra.
             </p>
           </div>
@@ -206,11 +206,11 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
         {items.map((item) =>
           item.type === 'day' ? (
             <div key={item.id} className="flex items-center gap-3 py-3">
-              <span className="flex-1 h-px bg-ink-700" />
-              <span className="font-mono text-[10px] font-bold tracking-wide text-ink-600 uppercase">
+              <span className="flex-1 h-px bg-slate-200" />
+              <span className="font-mono text-[10px] font-bold tracking-wide text-slate-500 uppercase">
                 {formatDayLabel(item.at)}
               </span>
-              <span className="flex-1 h-px bg-ink-700" />
+              <span className="flex-1 h-px bg-slate-200" />
             </div>
           ) : (
             <MessageRow
@@ -230,14 +230,14 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
       {pendingCount > 0 && (
         <button
           onClick={() => scrollToBottom()}
-          className="absolute left-1/2 -translate-x-1/2 bottom-[74px] z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-signal-500 hover:bg-signal-400 text-white text-[12px] font-semibold shadow-lg transition-colors"
+          className="absolute left-1/2 -translate-x-1/2 bottom-[74px] z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-500 hover:bg-brand-600 text-white text-[12px] font-semibold shadow-lg transition-colors"
         >
           <ArrowDown className="h-3.5 w-3.5" />
           {pendingCount} nouveau{pendingCount > 1 ? 'x' : ''} message{pendingCount > 1 ? 's' : ''}
         </button>
       )}
 
-      <div className="flex-none border-t border-ink-700 p-3">
+      <div className="flex-none border-t border-slate-200 p-3">
         <div className="relative flex items-end gap-2">
           {composerPickerOpen && (
             <EmojiPicker
@@ -255,7 +255,7 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
             onClick={() => setComposerPickerOpen((open) => !open)}
             title="Emojis"
             className={`flex-none w-9 h-9 rounded-md flex items-center justify-center transition-colors ${
-              composerPickerOpen ? 'bg-white/[0.1] text-white' : 'text-ink-500 hover:text-white hover:bg-white/[0.06]'
+              composerPickerOpen ? 'bg-slate-100 text-slate-950' : 'text-slate-500 hover:text-slate-950 hover:bg-slate-100'
             }`}
           >
             <Smile className="h-[18px] w-[18px]" />
@@ -268,7 +268,7 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Écrire un message…"
-            className="flex-1 resize-none max-h-28 bg-white/[0.05] border border-ink-700 rounded-md px-3 py-2 text-[13.5px] leading-relaxed text-white placeholder:text-ink-500 focus:outline-none focus:border-signal-500 transition-colors scrollbar-hide"
+            className="flex-1 resize-none max-h-28 bg-surface border border-slate-200 rounded-md px-3 py-2 text-[13.5px] leading-relaxed text-slate-950 placeholder:text-slate-500 focus:outline-none focus:border-brand-500 transition-colors scrollbar-hide"
           />
 
           <button
@@ -276,7 +276,7 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
             onClick={submit}
             disabled={!draft.trim() || sending}
             title="Envoyer"
-            className="flex-none w-9 h-9 rounded-md bg-signal-500 hover:bg-signal-400 disabled:opacity-30 disabled:cursor-not-allowed text-white transition-colors flex items-center justify-center"
+            className="flex-none w-9 h-9 rounded-md bg-brand-500 hover:bg-brand-600 disabled:opacity-30 disabled:cursor-not-allowed text-white transition-colors flex items-center justify-center"
           >
             <Send className="h-4 w-4" />
           </button>
@@ -327,10 +327,10 @@ function MessageRow({
       <div className={`flex flex-col min-w-0 max-w-[78%] ${isMine ? 'items-end' : 'items-start'}`}>
         {startsGroup && (
           <div className={`flex items-baseline gap-2 mb-1 ${isMine ? 'flex-row-reverse' : ''}`}>
-            <span className="text-[12.5px] font-semibold text-white truncate">
+            <span className="text-[12.5px] font-semibold text-slate-950 truncate">
               {isMine ? 'Vous' : message.sender_name}
             </span>
-            <span className="font-mono text-[10.5px] text-ink-600 flex-none">
+            <span className="font-mono text-[10.5px] text-slate-500 flex-none">
               {formatTime(message.created_at)}
             </span>
           </div>
@@ -343,8 +343,8 @@ function MessageRow({
             big
               ? ''
               : isMine
-                ? 'bg-signal-500/20 border border-signal-500/30 text-white rounded-2xl rounded-tr-sm'
-                : 'bg-white/[0.07] border border-white/[0.05] text-mist-300 rounded-2xl rounded-tl-sm'
+                ? 'bg-brand-50 border border-brand-500/25 text-slate-950 rounded-2xl rounded-tr-sm'
+                : 'bg-slate-100 border border-slate-200 text-slate-950 rounded-2xl rounded-tl-sm'
           }`}
         >
           {renderContent(message.content)}
@@ -359,8 +359,8 @@ function MessageRow({
                 title={reaction.names.join(', ')}
                 className={`flex items-center gap-1 h-6 px-1.5 rounded-full text-[12px] border transition-colors ${
                   reaction.mine
-                    ? 'bg-signal-500/15 border-signal-500/45 text-signal-300'
-                    : 'bg-white/[0.06] border-transparent text-mist-300 hover:bg-white/[0.1]'
+                    ? 'bg-brand-500/15 border-brand-500/45 text-brand-500'
+                    : 'bg-slate-100 border-transparent text-slate-700 hover:bg-slate-200'
                 }`}
               >
                 <span>{reaction.emoji}</span>
@@ -374,7 +374,7 @@ function MessageRow({
       {/* Barre de réactions rapides, révélée au survol — côté intérieur, pour
           ne pas déborder du panneau. */}
       <div
-        className={`absolute -top-2 z-10 items-center gap-0.5 p-0.5 rounded-md bg-ink-850 border border-ink-700 shadow-lg ${
+        className={`absolute -top-2 z-10 items-center gap-0.5 p-0.5 rounded-md bg-surface border border-slate-200 shadow-lg ${
           isMine ? 'left-2' : 'right-2'
         } ${pickerOpen ? 'flex' : 'hidden group-hover:flex'}`}
       >
@@ -383,16 +383,16 @@ function MessageRow({
             key={emoji}
             onClick={() => onToggleReaction(message.id, emoji)}
             title={`Réagir avec ${emoji}`}
-            className="w-6 h-6 rounded text-[14px] hover:bg-white/[0.1] transition-colors flex items-center justify-center"
+            className="w-6 h-6 rounded text-[14px] hover:bg-slate-100 transition-colors flex items-center justify-center"
           >
             {emoji}
           </button>
         ))}
-        <span className="w-px h-4 bg-ink-700 mx-0.5" />
+        <span className="w-px h-4 bg-slate-200 mx-0.5" />
         <button
           onClick={() => (pickerOpen ? onClosePicker() : onOpenPicker())}
           title="Plus d'emojis"
-          className="w-6 h-6 rounded text-ink-500 hover:text-white hover:bg-white/[0.1] transition-colors flex items-center justify-center"
+          className="w-6 h-6 rounded text-slate-500 hover:text-slate-950 hover:bg-slate-100 transition-colors flex items-center justify-center"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>

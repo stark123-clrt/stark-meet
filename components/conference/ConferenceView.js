@@ -1,28 +1,15 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  Mic,
-  MicOff,
-  Video,
-  VideoOff,
-  PhoneOff,
-  Monitor,
-  MonitorOff,
-  Hand,
-  Lock,
-  LockOpen,
-  Settings,
-  Copy,
-  Check,
-  Users,
-  X,
+  Mic, MicOff, Video, VideoOff, PhoneOff, Monitor, MonitorOff, Hand,
+  Lock, LockOpen, Settings, Copy, Check, Users, X, Circle,
 } from 'lucide-react';
 import VideoGrid from './VideoGrid';
 import SidePanel from './SidePanel';
 import DeviceSelector from './DeviceSelector';
-import useMediasoup from '@/hooks/useMediasoup';
-import { initialsOf } from '@/lib/identity';
+import Avatar from '@/components/ui/Avatar';
+import { formatDateTime } from '@/lib/datetime';
 
 function formatElapsed(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -32,20 +19,32 @@ function formatElapsed(seconds) {
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-function ctrlClass(on, danger = false) {
-  const base = 'w-12 h-12 sm:w-[52px] sm:h-[52px] rounded-full flex items-center justify-center transition-colors flex-none';
-  if (!on && danger) return `${base} bg-danger-500/15 border border-danger-500/45 text-danger-500`;
-  return `${base} bg-white/[0.07] text-mist-300 hover:bg-white/[0.13] hover:text-white`;
-}
+/** Bouton circulaire de la barre de contrôle. */
+function Control({ icon: Icon, label, onClick, disabled, active = true, tone = 'neutral' }) {
+  const base =
+    'w-12 h-12 rounded-full flex items-center justify-center flex-none transition-colors duration-200 ease-standard disabled:opacity-40 disabled:cursor-not-allowed';
 
-function accentCtrlClass(active) {
-  const base = 'w-12 h-12 sm:w-[52px] sm:h-[52px] rounded-full flex items-center justify-center transition-colors flex-none';
-  return active
-    ? `${base} bg-amber-500/15 border border-amber-500/45 text-amber-500`
-    : `${base} bg-white/[0.07] text-mist-300 hover:bg-white/[0.13] hover:text-white`;
+  const tones = {
+    neutral: active
+      ? 'bg-slate-100 text-slate-950 hover:bg-slate-200'
+      : 'bg-error-500 text-white hover:brightness-110',
+    accent: active
+      ? 'bg-brand-50 text-brand-500 hover:bg-brand-100'
+      : 'bg-slate-100 text-slate-950 hover:bg-slate-200',
+    warning: active
+      ? 'bg-warning-50 text-warning-500 hover:brightness-95'
+      : 'bg-slate-100 text-slate-950 hover:bg-slate-200',
+  };
+
+  return (
+    <button onClick={onClick} disabled={disabled} title={label} aria-label={label} className={`${base} ${tones[tone]}`}>
+      <Icon className="h-5 w-5" />
+    </button>
+  );
 }
 
 export default function ConferenceView({
+  media,
   meeting,
   currentUserId,
   currentUserName,
@@ -65,91 +64,52 @@ export default function ConferenceView({
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [copied, setCopied] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const hasJoinedRef = useRef(false);
   const joinedAtRef = useRef(null);
 
   const {
-    localStream,
-    remoteStreams,
-    remotePeers,
-    isMicOn,
-    isVideoOn,
-    isConnected,
-    isScreenSharing,
-    isHandRaised,
-    raisedHands,
-    remoteMediaState,
-    remoteScreenShares,
+    localStream, remoteStreams, remotePeers,
+    isMicOn, isVideoOn, isConnected, isScreenSharing, isHandRaised,
+    raisedHands, remoteMediaState, remoteScreenShares,
     isForceMuted: isForceMutedBySignal,
-    error,
-    clearError,
-    canShareScreen,
-    joinMeeting,
-    leaveMeeting,
-    toggleMic,
-    setMicEnabled,
-    toggleVideo,
-    toggleHand,
-    startScreenShare,
-    stopScreenShare,
-  } = useMediasoup(meeting?.id, currentUserId, currentUserName);
-
-  useEffect(() => {
-    if (currentUserId && meeting?.id && !hasJoinedRef.current) {
-      hasJoinedRef.current = true;
-      joinMeeting();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId, meeting?.id]);
-
-  // Libérer caméra, micro et connexion même si la vue disparaît sans passer
-  // par le bouton « Quitter » — c'est le cas quand l'hôte exclut quelqu'un :
-  // la page bascule sur l'écran d'exclusion, et sans ça la webcam de la
-  // personne restait allumée.
-  const leaveMeetingRef = useRef(leaveMeeting);
-  leaveMeetingRef.current = leaveMeeting;
-  useEffect(() => () => leaveMeetingRef.current?.(), []);
-
-  // Un message d'erreur ne doit pas rester affiché pour le reste de la
-  // réunion : il concerne une action ponctuelle qui a échoué. Il s'efface
-  // seul, et reste fermable à la main entre-temps.
-  useEffect(() => {
-    if (!error) return;
-    const timer = setTimeout(() => clearError?.(), 8000);
-    return () => clearTimeout(timer);
-  }, [error, clearError]);
+    error, clearError, canShareScreen,
+    leaveMeeting, toggleMic, setMicEnabled, toggleVideo, toggleHand,
+    startScreenShare, stopScreenShare,
+  } = media;
 
   useEffect(() => {
     if (isConnected && !joinedAtRef.current) joinedAtRef.current = Date.now();
     if (!isConnected) return;
+
     const interval = setInterval(() => {
       setElapsed(Math.floor((Date.now() - joinedAtRef.current) / 1000));
     }, 1000);
     return () => clearInterval(interval);
   }, [isConnected]);
 
-  // Ne montrer dans le panneau participants que ceux réellement connectés
-  // à Mediasoup en ce moment (+ moi-même) — une ligne "admitted" en base
-  // reste sinon indéfiniment si quelqu'un ferme l'onglet sans cliquer
-  // "Quitter" (aucune déconnexion réseau ne met à jour son statut).
+  // Un message d'erreur concerne une action ponctuelle : il ne doit pas rester
+  // affiché pour le reste de la réunion.
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => clearError?.(), 8000);
+    return () => clearTimeout(timer);
+  }, [error, clearError]);
+
+  // Ne montrer que les participants réellement connectés au SFU (+ moi) : une
+  // ligne « admitted » en base survit indéfiniment à un onglet fermé sans
+  // clic sur « Quitter ».
   const connectedParticipants = (participants || []).filter((p) => {
     const participantUserId = p.profile_id || p.guest_id;
     if (participantUserId === currentUserId) return true;
     return Object.values(remotePeers).some((peer) => peer.userId === participantUserId);
   });
 
-  // Mute forcé par l'hôte. Deux sources concordantes : la ligne en base (qui
-  // survit à un rechargement) et le signal direct du SFU (immédiat, et déjà
-  // appliqué côté serveur). L'une ou l'autre suffit à couper.
-  const myParticipantRow = participants?.find(
-    (p) => (p.profile_id || p.guest_id) === currentUserId
-  );
+  // Mute forcé : deux sources concordantes — la ligne en base (qui survit à un
+  // rechargement) et le signal direct du SFU (immédiat, déjà appliqué serveur).
+  const myParticipantRow = participants?.find((p) => (p.profile_id || p.guest_id) === currentUserId);
   const isForceMuted = !!myParticipantRow?.force_muted || isForceMutedBySignal;
 
   useEffect(() => {
-    if (isForceMuted && isMicOn) {
-      setMicEnabled(false);
-    }
+    if (isForceMuted && isMicOn) setMicEnabled(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isForceMuted, isMicOn]);
 
@@ -159,73 +119,85 @@ export default function ConferenceView({
   };
 
   const copyCode = () => {
-    navigator.clipboard.writeText(meeting?.meeting_code || '');
+    navigator.clipboard.writeText(`${window.location.origin}/room/${meeting?.meeting_code}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
 
   const isLocked = !!meeting?.locked_at;
   const waitingCount = waitingParticipants?.length || 0;
-  const totalCount = connectedParticipants.length + waitingCount;
-  const initials = initialsOf(currentUserName);
 
   return (
-    <div className="flex flex-col h-full w-full bg-ink-950 overflow-hidden">
-      <header className="flex-none flex items-center justify-between gap-3 px-3 sm:px-6 h-[60px] bg-ink-900 border-b border-ink-700">
-        <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-          <div className="hidden sm:flex items-center gap-2 font-mono font-bold text-[13.5px] tracking-wide text-white flex-none">
-            <span className="w-1.5 h-1.5 rounded-full bg-signal-500 inline-block" />
-            STARK MEET
-          </div>
-          <span className="hidden sm:block w-px h-6 bg-ink-700 flex-none" />
-          <span className="text-[14.5px] font-semibold text-white truncate">{meeting?.title || 'Réunion'}</span>
-          <button
-            onClick={copyCode}
-            className="flex items-center gap-1.5 font-mono text-[11.5px] text-mist-300 bg-white/[0.05] rounded px-2.5 py-1 hover:bg-white/[0.09] transition-colors flex-none"
-          >
-            {meeting?.meeting_code}
-            {copied ? <Check className="h-3 w-3 text-ok-500" /> : <Copy className="h-3 w-3" />}
-          </button>
+    <div className="flex flex-col h-screen w-full bg-canvas text-slate-950 overflow-hidden">
+      {/* ---- En-tête ---- */}
+      <header className="flex-none flex items-center gap-3 sm:gap-5 px-4 sm:px-6 h-[68px] bg-surface border-b border-slate-200">
+        <div className="min-w-0 flex-1 sm:flex-none">
+          <h1 className="text-[15px] font-medium truncate">{meeting?.title || 'Réunion'}</h1>
+          <p className="text-[12px] text-slate-500 truncate">
+            {meeting?.scheduled_at ? formatDateTime(meeting.scheduled_at) : 'Réunion instantanée'}
+          </p>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3.5 flex-none">
-          {isConnected && (
-            <span className="hidden sm:flex items-center gap-1.5 font-mono text-[11px] font-semibold text-ok-500 bg-ok-500/10 border border-ok-500/25 rounded px-2.5 py-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-ok-500 inline-block" />
-              EN DIRECT
+        <div className="hidden lg:flex items-center">
+          {connectedParticipants.slice(0, 4).map((p) => (
+            <Avatar
+              key={p.id}
+              size="sm"
+              ring
+              className="-mr-2"
+              name={p.display_name}
+              seed={p.profile_id || p.guest_id || p.id}
+            />
+          ))}
+          {connectedParticipants.length > 4 && (
+            <span className="-mr-2 w-8 h-8 rounded-full border-2 border-surface bg-slate-100 text-slate-700 font-mono text-[10px] font-bold flex items-center justify-center">
+              +{connectedParticipants.length - 4}
             </span>
           )}
+        </div>
+
+        <button
+          onClick={copyCode}
+          title="Copier le lien d'invitation"
+          className="hidden sm:flex items-center gap-2 h-9 px-3 rounded-sm bg-brand-50 text-brand-500 font-mono text-[12.5px] hover:brightness-95 transition"
+        >
+          {meeting?.meeting_code}
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
+
+        <div className="ml-auto flex items-center gap-2 sm:gap-3">
           {isConnected && (
-            <span className="hidden md:inline font-mono text-[13px] text-mist-300 tabular-nums">
+            <span className="hidden md:inline font-mono text-[13px] text-slate-700 tabular-nums">
               {formatElapsed(elapsed)}
             </span>
           )}
           {isLocked && (
-            <span className="hidden lg:flex items-center gap-1.5 font-mono text-[11px] font-semibold text-amber-500 bg-amber-500/10 border border-amber-500/28 rounded px-2.5 py-1">
-              <Lock className="h-3 w-3" />
-              SALLE VERROUILLÉE
+            <span className="hidden lg:flex items-center gap-1.5 font-mono text-[10px] font-bold tracking-overline uppercase text-warning-500 bg-warning-50 rounded-xs px-2 py-1">
+              <Lock className="h-3 w-3" /> Verrouillée
             </span>
           )}
+
           <button
             onClick={() => setShowDeviceSelector(true)}
-            className="p-2 rounded-md text-ink-500 hover:text-white hover:bg-ink-800 transition-colors"
-            title="Paramètres des périphériques"
+            title="Périphériques"
+            className="p-2 rounded-sm text-slate-500 hover:text-slate-950 hover:bg-slate-100 transition-colors"
           >
             <Settings className="h-4 w-4" />
           </button>
+
           <button
             onClick={() => setMobilePanelOpen(true)}
-            className="lg:hidden relative p-2 rounded-md text-ink-500 hover:text-white hover:bg-ink-800 transition-colors"
             title="Participants et discussion"
+            className="lg:hidden relative p-2 rounded-sm text-slate-500 hover:text-slate-950 hover:bg-slate-100 transition-colors"
           >
             <Users className="h-4 w-4" />
             {/* Le panneau est masqué sur mobile : sans ce cumul, un message de
-                chat resterait totalement invisible sur téléphone. Les demandes
-                d'admission restent prioritaires en couleur. */}
+                chat resterait invisible. Les demandes d'admission gardent la
+                priorité de couleur. */}
             {waitingCount + unreadMessages > 0 && (
               <span
-                className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center ${
-                  waitingCount > 0 ? 'bg-amber-500 text-ink-950' : 'bg-signal-500 text-white'
+                className={`absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center ${
+                  waitingCount > 0 ? 'bg-warning-500 text-white' : 'bg-brand-500 text-white'
                 }`}
               >
                 {waitingCount + unreadMessages}
@@ -236,36 +208,29 @@ export default function ConferenceView({
       </header>
 
       {error && (
-        <div className="flex-none flex items-start gap-3 bg-signal-500/10 border-b border-signal-500/20 text-signal-300 px-5 py-2 text-sm">
+        <div className="flex-none flex items-start gap-3 bg-warning-50 border-b border-warning-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
           <span className="flex-1">{error}</span>
-          <button
-            onClick={clearError}
-            title="Masquer"
-            className="flex-none p-0.5 rounded hover:bg-white/10 text-signal-300/70 hover:text-signal-300 transition-colors"
-          >
+          <button onClick={clearError} title="Masquer" className="flex-none p-0.5 rounded-sm hover:bg-black/5">
             <X className="h-4 w-4" />
           </button>
         </div>
       )}
 
+      {/* ---- Scène + panneau ---- */}
       <div className="flex-1 flex min-h-0">
-        {currentUserId ? (
-          <VideoGrid
-            participants={participants}
-            remotePeers={remotePeers}
-            localStream={localStream}
-            remoteStreams={remoteStreams}
-            currentUserId={currentUserId}
-            isMicOn={isMicOn}
-            isVideoOn={isVideoOn}
-            raisedHands={raisedHands}
-            remoteMediaState={remoteMediaState}
-            remoteScreenShares={remoteScreenShares}
-            isScreenSharing={isScreenSharing}
-          />
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-ink-500">Chargement…</div>
-        )}
+        <VideoGrid
+          participants={participants}
+          remotePeers={remotePeers}
+          localStream={localStream}
+          remoteStreams={remoteStreams}
+          currentUserId={currentUserId}
+          isMicOn={isMicOn}
+          isVideoOn={isVideoOn}
+          raisedHands={raisedHands}
+          remoteMediaState={remoteMediaState}
+          remoteScreenShares={remoteScreenShares}
+          isScreenSharing={isScreenSharing}
+        />
 
         <SidePanel
           meetingId={meeting?.id}
@@ -283,77 +248,83 @@ export default function ConferenceView({
           mobileOpen={mobilePanelOpen}
           onCloseMobile={() => setMobilePanelOpen(false)}
           onUnreadChange={setUnreadMessages}
+          onCopyInvite={copyCode}
         />
       </div>
 
       {showDeviceSelector && <DeviceSelector onClose={() => setShowDeviceSelector(false)} />}
 
-      <footer className="flex-none flex items-center justify-between gap-2 px-3 sm:px-6 h-auto sm:h-[82px] py-2.5 sm:py-0 bg-ink-900 border-t border-ink-700">
-        <div className="hidden md:flex items-center gap-2.5 w-[280px] flex-none">
-          <span className="w-[30px] h-[30px] rounded-full bg-ink-800 text-white font-mono text-[11px] font-semibold flex items-center justify-center flex-none">
-            {initials}
-          </span>
+      {/* ---- Barre de contrôle ---- */}
+      <footer className="flex-none flex items-center justify-between gap-2 px-4 sm:px-6 h-auto sm:h-[84px] py-3 sm:py-0 bg-surface border-t border-slate-200">
+        <div className="hidden md:flex items-center gap-2.5 w-[260px] flex-none">
+          <Avatar size="sm" name={currentUserName} seed={currentUserId} />
           <div className="flex flex-col min-w-0">
-            <span className="text-[13px] text-white truncate">{currentUserName}</span>
-            <span className="font-mono text-[10.5px] text-ink-600">
-              {isHost ? 'HÔTE DE LA RÉUNION' : 'PARTICIPANT'}
+            <span className="text-[13.5px] font-medium truncate">{currentUserName}</span>
+            <span className="text-[11.5px] text-slate-500">
+              {isHost ? 'Modérateur' : 'Participant'}
             </span>
           </div>
         </div>
 
         <div className="flex-1 md:flex-none flex items-center justify-center gap-2 sm:gap-3 overflow-x-auto scrollbar-hide">
-          <button
+          <Control
+            icon={isMicOn ? Mic : MicOff}
+            label={isForceMuted ? "Micro coupé par l'hôte" : 'Micro'}
             onClick={toggleMic}
             disabled={isForceMuted}
-            title={isForceMuted ? "Micro coupé par l'hôte" : 'Micro'}
-            className={`${ctrlClass(isMicOn, true)} disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
-          </button>
-
-          <button onClick={toggleVideo} disabled={isScreenSharing} title="Caméra" className={`${ctrlClass(isVideoOn, true)} disabled:opacity-40`}>
-            {isVideoOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
-          </button>
-
-          <button
+            active={isMicOn}
+          />
+          <Control
+            icon={isVideoOn ? Video : VideoOff}
+            label="Caméra"
+            onClick={toggleVideo}
+            disabled={isScreenSharing}
+            active={isVideoOn}
+          />
+          <Control
+            icon={isScreenSharing ? MonitorOff : Monitor}
+            label={canShareScreen ? "Partager l'écran" : "Partage d'écran indisponible sur ce navigateur"}
             onClick={isScreenSharing ? stopScreenShare : startScreenShare}
             disabled={!canShareScreen && !isScreenSharing}
-            title={
-              canShareScreen
-                ? "Partager l'écran"
-                : "Partage d'écran indisponible sur ce navigateur — utilisez un ordinateur"
-            }
-            className={`${isScreenSharing ? accentCtrlClass(true) : ctrlClass(true)} disabled:opacity-30 disabled:cursor-not-allowed`}
-          >
-            {isScreenSharing ? <MonitorOff className="h-5 w-5" /> : <Monitor className="h-5 w-5" />}
-          </button>
-
-          <button onClick={toggleHand} title="Lever la main" className={accentCtrlClass(isHandRaised)}>
-            <Hand className="h-5 w-5" />
-          </button>
-
+            tone="accent"
+            active={isScreenSharing}
+          />
+          {/* L'enregistrement figure dans le template mais n'existe pas encore :
+              bouton présent et désactivé, plutôt qu'une action qui échouerait. */}
+          <Control
+            icon={Circle}
+            label="Enregistrement — arrivera avec le plan Équipe"
+            disabled
+          />
+          <Control
+            icon={Hand}
+            label="Lever la main"
+            onClick={toggleHand}
+            tone="warning"
+            active={isHandRaised}
+          />
           {isHost && (
-            <button
+            <Control
+              icon={isLocked ? Lock : LockOpen}
+              label={isLocked ? 'Déverrouiller la salle' : 'Verrouiller la salle'}
               onClick={onToggleLock}
-              title={isLocked ? 'Verrouillée — cliquer pour déverrouiller' : 'Verrouiller la salle'}
-              className={accentCtrlClass(isLocked)}
-            >
-              {isLocked ? <Lock className="h-5 w-5" /> : <LockOpen className="h-5 w-5" />}
-            </button>
+              tone="warning"
+              active={isLocked}
+            />
           )}
 
-          <span className="w-px h-8 bg-ink-700 mx-1 flex-none" />
+          <span className="w-px h-8 bg-slate-200 mx-1 flex-none" />
 
           <button
             onClick={handleLeave}
-            className="flex-none flex items-center gap-2 h-12 sm:h-[52px] px-4 sm:px-[22px] rounded-full bg-signal-500 hover:bg-signal-600 text-white text-[13.5px] font-semibold transition-colors"
+            className="flex-none flex items-center gap-2 h-12 px-4 sm:px-6 rounded-full bg-error-500 text-white text-[13.5px] font-semibold hover:brightness-110 transition"
           >
             <PhoneOff className="h-4 w-4" />
-            <span className="hidden sm:inline">Quitter</span>
+            <span className="hidden sm:inline">Quitter l&apos;appel</span>
           </button>
         </div>
 
-        <div className="hidden md:block w-[280px] flex-none" />
+        <div className="hidden md:block w-[260px] flex-none" />
       </footer>
     </div>
   );

@@ -641,6 +641,19 @@ export default function useMediasoup(meetingId, userId, userName) {
   }, [applyLocalStream]);
 
   /**
+   * Préparer l'aperçu local, sans rien connecter.
+   *
+   * Le lobby doit montrer sa caméra et laisser régler micro/caméra AVANT
+   * d'entrer dans la salle : impossible si l'obtention du média est soudée à la
+   * connexion au serveur. D'où cette étape séparée, dont `joinMeeting`
+   * réutilise ensuite le flux au lieu de redemander l'accès aux périphériques.
+   */
+  const initPreview = useCallback(async () => {
+    if (localStreamRef.current) return localStreamRef.current;
+    return initLocalMedia();
+  }, [initLocalMedia]);
+
+  /**
    * Rejoindre une réunion
    */
   const joinMeeting = useCallback(async () => {
@@ -650,8 +663,8 @@ export default function useMediasoup(meetingId, userId, userName) {
       // 1. Connexion au serveur
       await connectToServer();
 
-      // 2. Initialiser le média local
-      const stream = await initLocalMedia();
+      // 2. Média local — déjà obtenu si l'on passe par le lobby.
+      const stream = localStreamRef.current || await initLocalMedia();
 
       // 3. Rejoindre la salle
       const roomResponse = await joinRoomSocket(meetingId, userName);
@@ -687,20 +700,34 @@ export default function useMediasoup(meetingId, userId, userName) {
       if (stream.getAudioTracks().length > 0) {
         await produce('audio', stream);
 
-        // Le serveur peut avoir pausé ce producer d'office si l'hôte avait
-        // déjà coupé ce micro : on aligne l'interface plutôt que d'afficher un
-        // micro ouvert qui n'émet rien.
+        const audioTrack = stream.getAudioTracks()[0];
+
+        // Micro coupé dans le lobby : la piste est désactivée mais le producer
+        // vient d'être créé actif. Sans cette mise en pause, on entrerait dans
+        // la réunion en émettant alors que l'interface affiche « coupé ».
+        if (audioTrack && !audioTrack.enabled && audioProducerRef.current) {
+          await audioProducerRef.current.pause();
+          socketRef.current?.emit('pauseProducer', { producerId: audioProducerRef.current.id });
+          setIsMicOn(false);
+        }
+
+        // Le serveur peut aussi avoir pausé ce producer d'office si l'hôte
+        // avait déjà coupé ce micro : on aligne l'interface plutôt que
+        // d'afficher un micro ouvert qui n'émet rien.
         if (audioProducerRef.current?.paused) {
-          const track = stream.getAudioTracks()[0];
-          if (track) track.enabled = false;
+          if (audioTrack) audioTrack.enabled = false;
           setIsMicOn(false);
         }
       }
 
       console.log('✅ Réunion rejointe avec succès');
+      // Renvoie l'issue plutôt que de laisser l'appelant inspecter `error` :
+      // cet état ne serait pas encore à jour dans sa closure au retour du await.
+      return true;
     } catch (err) {
       console.error('❌ Erreur lors de la connexion:', err);
       setError(err.message || 'Erreur lors de la connexion');
+      return false;
     }
   }, [
     meetingId,
@@ -777,8 +804,17 @@ export default function useMediasoup(meetingId, userId, userName) {
     const producer = audioProducerRef.current;
     const track = stream?.getAudioTracks()[0];
 
-    if (!track || !producer) {
+    if (!track) {
       setIsMicOn(false);
+      return;
+    }
+
+    // Avant d'avoir rejoint (aperçu du lobby), il n'existe aucun producer :
+    // on se contente d'activer ou de couper la piste. L'état choisi ici est
+    // ensuite repris au moment de rejoindre.
+    if (!producer) {
+      track.enabled = enabled;
+      setIsMicOn(enabled);
       return;
     }
 
@@ -987,6 +1023,7 @@ export default function useMediasoup(meetingId, userId, userName) {
     error,
     clearError,
     canShareScreen,
+    initPreview,
     joinMeeting,
     leaveMeeting,
     toggleMic,

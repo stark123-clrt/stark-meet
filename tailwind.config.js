@@ -38,41 +38,6 @@ module.exports = {
         warning: { 50: '#FEF4E3', 500: '#F59E0B' },
         error: { 50: '#FDECEC', 500: '#EF4444' },
 
-        // ====================================================================
-        // Ancienne palette sombre — à retirer en fin de portage
-        // ====================================================================
-        // Conservée le temps que tous les écrans passent au nouvel habillage :
-        // la supprimer maintenant viderait les classes des composants encore
-        // non repris et les rendrait illisibles entre deux étapes.
-        ink: {
-          950: '#05070a',
-          900: '#0b0f15',
-          850: '#0f141b',
-          800: 'rgba(255,255,255,0.06)',
-          700: 'rgba(255,255,255,0.09)',
-          600: 'rgba(238,241,245,0.35)',
-          500: 'rgba(238,241,245,0.45)',
-        },
-        mist: {
-          100: '#eef1f5',
-          300: 'rgba(238,241,245,0.65)',
-        },
-        signal: {
-          300: '#ff9478',
-          400: '#ff7a54',
-          500: '#ef5b34',
-          600: '#d84a26',
-        },
-        ok: {
-          300: '#8fe8c3',
-          500: '#35d399',
-        },
-        amber: {
-          500: '#f0b429',
-        },
-        danger: {
-          500: '#ff6b5e',
-        },
       },
       fontFamily: {
         // display : General Sans, réservé aux titres (gros, tracking serré)

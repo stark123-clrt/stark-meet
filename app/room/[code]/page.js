@@ -1,11 +1,16 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Lock, Clock, User as UserIcon } from 'lucide-react';
+import Link from 'next/link';
+import { Lock, User as UserIcon } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import ConferenceView from '@/components/conference/ConferenceView';
+import Lobby from '@/components/conference/Lobby';
+import EndScreen from '@/components/conference/EndScreen';
 import useRoomChannel from '@/hooks/useRoomChannel';
+import useMediasoup from '@/hooks/useMediasoup';
+import { withDefaults } from '@/lib/preferences';
 
 // Filet de sécurité si le canal temps réel est momentanément indisponible :
 // on resynchronise la liste depuis Supabase de temps en temps. Volontairement
@@ -38,12 +43,26 @@ export default function RoomPage() {
   const [participants, setParticipants] = useState([]);
   const [lockedOut, setLockedOut] = useState(false);
 
+  // Trois phases, comme dans le template : préparation, appel, fin.
+  const [phase, setPhase] = useState('lobby');
+  const [joining, setJoining] = useState(false);
+  const [endStats, setEndStats] = useState(null);
+  const callStartedAtRef = useRef(null);
+
   const guestIdentityRef = useRef(null);
   const myParticipantIdRef = useRef(null);
   myParticipantIdRef.current = myParticipant?.id || null;
 
   const isHost = !!(authUser && meeting && authUser.id === meeting.host_id);
   const currentUserId = authUser?.id || guestIdentityRef.current?.guestId || null;
+  const currentUserName = profile?.full_name || guestIdentityRef.current?.displayName || 'Vous';
+  const preferences = useMemo(() => withDefaults(profile?.preferences), [profile?.preferences]);
+
+  // Le média est piloté ici, et non dans ConferenceView : le lobby doit
+  // afficher l'aperçu caméra avant que la vue d'appel n'existe, et l'entrée en
+  // réunion doit réutiliser ce même flux plutôt que redemander l'accès aux
+  // périphériques — ce qui provoquerait un second clignotement d'autorisation.
+  const media = useMediasoup(meeting?.id, currentUserId, currentUserName);
 
   // ---- Chargement initial : réunion + identité ----
   useEffect(() => {
@@ -261,6 +280,52 @@ export default function RoomPage() {
     return () => clearInterval(interval);
   }, [meeting?.id, loadParticipants]);
 
+  // ---- Aperçu du lobby ----
+  // On ne demande la caméra qu'une fois l'identité connue et l'accès accordé :
+  // solliciter les périphériques avant serait intrusif, et inutile si la
+  // personne est refusée.
+  const previewRequestedRef = useRef(false);
+  useEffect(() => {
+    if (previewRequestedRef.current) return;
+    if (phase !== 'lobby' || !meeting || !currentUserId || lockedOut) return;
+    if (myParticipant?.status === 'denied' || myParticipant?.status === 'removed') return;
+
+    previewRequestedRef.current = true;
+    media.initPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, meeting, currentUserId, lockedOut, myParticipant?.status]);
+
+  // Application des préférences (arriver micro ou caméra coupés), une seule
+  // fois, dès que le flux local existe.
+  const prefsAppliedRef = useRef(false);
+  useEffect(() => {
+    if (prefsAppliedRef.current || !media.localStream) return;
+    prefsAppliedRef.current = true;
+
+    if (preferences.muteOnJoin) media.setMicEnabled(false);
+    if (preferences.cameraOffOnJoin && media.isVideoOn) media.toggleVideo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [media.localStream]);
+
+  // Libère caméra, micro et connexion si l'on quitte la page sans passer par
+  // le bouton « Quitter » (fermeture d'onglet, exclusion par l'hôte).
+  const leaveMediaRef = useRef(media.leaveMeeting);
+  leaveMediaRef.current = media.leaveMeeting;
+  useEffect(() => () => leaveMediaRef.current?.(), []);
+
+  const handleJoinCall = async () => {
+    setJoining(true);
+    const joined = await media.joinMeeting();
+    setJoining(false);
+
+    // On ne bascule en appel que si la connexion a réellement abouti ; sinon on
+    // reste dans le lobby, où le message d'erreur est visible.
+    if (joined) {
+      callStartedAtRef.current = Date.now();
+      setPhase('call');
+    }
+  };
+
   // ---- Actions hôte ----
   // Chaque action écrit dans Supabase (persistance) puis diffuse sur le canal
   // de contrôle (temps réel + application côté SFU pour le mute et
@@ -297,41 +362,90 @@ export default function RoomPage() {
   };
 
   const handleLeaveMeeting = async () => {
+    const durationMs = callStartedAtRef.current ? Date.now() - callStartedAtRef.current : 0;
+
+    // Le nombre de messages est compté en base plutôt que remonté depuis le
+    // panneau de discussion : une requête `head` ne transfère aucune ligne, et
+    // ça évite de faire traverser l'état du chat à toute l'application.
+    let messages = 0;
+    if (meeting?.id) {
+      const supabase = createClient();
+      const { count } = await supabase
+        .from('meeting_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('meeting_id', meeting.id);
+      messages = count ?? 0;
+    }
+
+    setEndStats({
+      durationMs,
+      participants: participants.filter((p) => p.status === 'admitted').length,
+      messages,
+    });
+
+    media.leaveMeeting();
+
     if (myParticipant) {
       await updateParticipant(myParticipant.id, { status: 'left', left_at: new Date().toISOString() });
     }
-    router.push(authUser ? '/dashboard' : '/');
+
+    setPhase('end');
+  };
+
+  /** Revenir dans la même réunion depuis l'écran de fin. */
+  const handleRejoin = async () => {
+    setEndStats(null);
+    previewRequestedRef.current = false;
+    prefsAppliedRef.current = false;
+
+    if (myParticipant) {
+      await updateParticipant(myParticipant.id, {
+        status: 'admitted',
+        joined_at: new Date().toISOString(),
+        left_at: null,
+      });
+    }
+
+    setPhase('lobby');
   };
 
   // ---- Rendus ----
+  const admittedParticipants = participants.filter((p) => p.status === 'admitted');
+  const waitingParticipants = participants.filter((p) => p.status === 'waiting');
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-ink-950 flex items-center justify-center">
-        <div className="text-mist-300 text-sm font-mono">Connexion à la réunion…</div>
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
+        <p className="font-mono text-[13px] text-slate-500">Connexion à la réunion…</p>
       </div>
     );
   }
 
   if (notFound) {
     return (
-      <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
-        <div className="text-center">
-          <p className="text-white font-semibold">Réunion introuvable</p>
-          <p className="text-ink-500 text-sm mt-1.5">Vérifiez le code ou le lien que vous avez reçu.</p>
-        </div>
-      </div>
+      <CenteredNotice
+        icon={Lock}
+        title="Réunion introuvable"
+        text="Vérifiez le code ou le lien que vous avez reçu."
+      />
     );
   }
 
+  // Un invité doit se nommer avant d'aller plus loin.
   if (needsName) {
     return (
-      <div className="min-h-screen bg-ink-950 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm bg-ink-900 border border-ink-700 rounded-lg p-7">
-          <h1 className="text-white text-lg font-semibold mb-1">Rejoindre "{meeting?.title}"</h1>
-          <p className="text-ink-500 text-sm mb-6">Entrez votre nom pour continuer.</p>
-          <form onSubmit={handleNameSubmit} className="space-y-4">
+      <div className="min-h-screen bg-canvas flex items-center justify-center p-4">
+        <div className="w-full max-w-[420px] bg-surface border border-slate-200 rounded-lg p-8">
+          <h1 className="font-display font-bold text-[22px] tracking-heading">
+            Rejoindre « {meeting?.title} »
+          </h1>
+          <p className="mt-1.5 text-[14px] text-slate-700">
+            Indiquez votre nom : c&apos;est ce que verront les autres participants.
+          </p>
+
+          <form onSubmit={handleNameSubmit} className="mt-6 flex flex-col gap-4">
             <div className="relative">
-              <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-500" />
+              <UserIcon className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
               <input
                 type="text"
                 value={nameInput}
@@ -339,14 +453,14 @@ export default function RoomPage() {
                 required
                 autoFocus
                 placeholder="Votre nom"
-                className="w-full pl-9 pr-3.5 py-2.5 bg-ink-800 border border-ink-700 rounded-md text-white text-sm placeholder:text-ink-500 focus:outline-none focus:border-signal-500 transition-colors"
+                className="w-full h-11 pl-10 pr-3.5 rounded-sm border border-slate-200 bg-surface text-[15px] placeholder:text-slate-500 outline-none transition-shadow duration-200 focus:border-brand-500 focus:shadow-focus"
               />
             </div>
             <button
               type="submit"
-              className="w-full bg-signal-500 hover:bg-signal-400 text-white font-medium py-2.5 rounded-md transition-colors text-sm"
+              className="w-full h-11 rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition-colors"
             >
-              Rejoindre
+              Continuer
             </button>
           </form>
         </div>
@@ -356,53 +470,68 @@ export default function RoomPage() {
 
   if (lockedOut) {
     return (
-      <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
-        <div className="text-center max-w-sm">
-          <Lock className="h-9 w-9 text-signal-400 mx-auto mb-4" />
-          <p className="text-white font-semibold">Accès refusé</p>
-          <p className="text-ink-500 text-sm mt-1.5">
-            L'hôte a verrouillé cette réunion ou vous en a été exclu.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (myParticipant?.status === 'waiting') {
-    return (
-      <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
-        <div className="text-center max-w-sm">
-          <Clock className="h-9 w-9 text-amber-500 mx-auto mb-4 animate-pulse" />
-          <p className="text-white font-semibold">En attente d'admission</p>
-          <p className="text-ink-500 text-sm mt-1.5">
-            L'hôte de "{meeting?.title}" doit vous laisser entrer. Cette page se mettra à jour automatiquement.
-          </p>
-        </div>
-      </div>
+      <CenteredNotice
+        icon={Lock}
+        title="Accès refusé"
+        text="L'hôte a verrouillé cette réunion, ou vous en avez été exclu."
+      />
     );
   }
 
   if (myParticipant?.status === 'denied' || myParticipant?.status === 'removed') {
     return (
-      <div className="min-h-screen bg-ink-950 flex items-center justify-center px-4">
-        <div className="text-center max-w-sm">
-          <Lock className="h-9 w-9 text-signal-400 mx-auto mb-4" />
-          <p className="text-white font-semibold">
-            {myParticipant.status === 'denied' ? "Votre demande a été refusée" : "Vous avez été exclu de la réunion"}
-          </p>
-        </div>
-      </div>
+      <CenteredNotice
+        icon={Lock}
+        title={
+          myParticipant.status === 'denied'
+            ? 'Votre demande a été refusée'
+            : 'Vous avez été exclu de la réunion'
+        }
+        text="Contactez l'hôte si vous pensez qu'il s'agit d'une erreur."
+      />
     );
   }
 
-  const admittedParticipants = participants.filter(p => p.status === 'admitted');
-  const waitingParticipants = participants.filter(p => p.status === 'waiting');
+  if (phase === 'end') {
+    return (
+      <EndScreen
+        meeting={meeting}
+        stats={endStats}
+        isHost={!!authUser}
+        onRejoin={handleRejoin}
+      />
+    );
+  }
+
+  // Phase de préparation — sert aussi d'écran d'attente pour un invité que
+  // l'hôte n'a pas encore admis, qui peut ainsi régler son micro en patientant.
+  if (phase === 'lobby') {
+    return (
+      <Lobby
+        meeting={meeting}
+        displayName={currentUserName}
+        userId={currentUserId}
+        localStream={media.localStream}
+        isMicOn={media.isMicOn}
+        isVideoOn={media.isVideoOn}
+        onToggleMic={media.toggleMic}
+        onToggleVideo={media.toggleVideo}
+        onJoin={handleJoinCall}
+        joining={joining}
+        waiting={myParticipant?.status === 'waiting'}
+        invitedCount={admittedParticipants.length}
+        error={media.error}
+        timeZone={preferences.timeZone}
+      />
+    );
+  }
 
   return (
     <ConferenceView
+      media={media}
       meeting={meeting}
       currentUserId={currentUserId}
-      currentUserName={profile?.full_name || guestIdentityRef.current?.displayName || 'Vous'}
+      currentUserName={currentUserName}
       isHost={isHost}
       roomChannel={roomChannel}
       participants={admittedParticipants}
@@ -414,5 +543,26 @@ export default function RoomPage() {
       onForceMute={handleForceMute}
       onRemove={handleRemove}
     />
+  );
+}
+
+/** Message plein écran — réunion introuvable, accès refusé, exclusion. */
+function CenteredNotice({ icon: Icon, title, text }) {
+  return (
+    <div className="min-h-screen bg-canvas flex items-center justify-center px-4">
+      <div className="max-w-[420px] text-center">
+        <span className="w-14 h-14 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center mx-auto mb-6">
+          <Icon className="h-6 w-6" />
+        </span>
+        <p className="font-display font-bold text-[20px] tracking-heading">{title}</p>
+        <p className="mt-2 text-[14px] leading-relaxed text-slate-700">{text}</p>
+        <Link
+          href="/"
+          className="mt-6 inline-flex h-10 px-5 items-center rounded-sm border border-slate-200 bg-surface text-[14px] font-medium hover:bg-slate-100 transition-colors"
+        >
+          Retour à l&apos;accueil
+        </Link>
+      </div>
+    </div>
   );
 }

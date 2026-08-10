@@ -14,8 +14,8 @@ import dynamic from 'next/dynamic';
 const EmojiPicker = dynamic(() => import('./EmojiPickerPanel'), {
   ssr: false,
   loading: () => (
-    <div className="absolute bottom-full mb-2 right-0 z-50 w-[340px] h-[420px] rounded-lg bg-ink-850 border border-ink-700 flex items-center justify-center">
-      <span className="text-ink-500 text-sm">Chargement des emojis…</span>
+    <div className="absolute bottom-full mb-2 right-0 z-50 w-[340px] h-[420px] rounded-lg bg-surface border border-slate-200 flex items-center justify-center">
+      <span className="text-slate-500 text-sm">Chargement des emojis…</span>
     </div>
   ),
 });
