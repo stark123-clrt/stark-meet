@@ -74,7 +74,7 @@ export default function ConferenceView({
     localStream, remoteStreams, remotePeers,
     isMicOn, isVideoOn, isConnected, isScreenSharing, isHandRaised,
     raisedHands, remoteMediaState, remoteScreenShares,
-    isForceMuted: isForceMutedBySignal,
+    isForceMuted: isForceMutedBySignal, isReconnecting,
     error, clearError, canShareScreen,
     leaveMeeting, toggleMic, setMicEnabled, toggleVideo, toggleHand,
     startScreenShare, stopScreenShare,
@@ -240,7 +240,18 @@ export default function ConferenceView({
         </div>
       </header>
 
-      {error && (
+      {/* Coupure réseau : la session est en cours de reconstruction. Le dire
+          explicitement évite qu'un silence soudain passe pour une panne — et
+          surtout, l'ancien comportement affichait « connecté » alors que la
+          personne était sortie de la réunion sans le savoir. */}
+      {isReconnecting && (
+        <div className="flex-none flex items-center gap-3 bg-warning-50 border-b border-warning-500/25 px-5 py-2.5 text-[13.5px] text-slate-700">
+          <span className="w-2 h-2 rounded-full bg-warning-500 animate-pulse flex-none" />
+          Connexion interrompue — reprise de la réunion en cours…
+        </div>
+      )}
+
+      {error && !isReconnecting && (
         <div className="flex-none flex items-start gap-3 bg-warning-50 border-b border-warning-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
           <span className="flex-1">{error}</span>
           <button onClick={clearError} title="Masquer" className="flex-none p-0.5 rounded-sm hover:bg-black/5">

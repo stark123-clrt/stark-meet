@@ -25,6 +25,7 @@ export default function useMediasoup(meetingId, userId, userName) {
   const [remoteMediaState, setRemoteMediaState] = useState({}); // peerId -> { audioPaused, videoPaused }
   const [remoteScreenShares, setRemoteScreenShares] = useState({}); // peerId -> bool
   const [isForceMuted, setIsForceMuted] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
   // Refs (persistent across renders)
   const socketRef = useRef(null);
@@ -50,6 +51,24 @@ export default function useMediasoup(meetingId, userId, userName) {
   // lirait sinon un stream périmé.
   const localStreamRef = useRef(null);
 
+  // Refs de reconnexion. `hasJoinedRef` distingue la première connexion des
+  // suivantes : socket.io émet `connect` dans les deux cas.
+  const hasJoinedRef = useRef(false);
+  const rejoiningRef = useRef(false);
+  const establishSessionRef = useRef(null);
+  // Les signaux éphémères doivent être réémis après une coupure ; on les lit
+  // par ref car le gestionnaire `connect` est enregistré une seule fois et
+  // capturerait sinon des états périmés.
+  const screenSharingRef = useRef(false);
+  const handRaisedRef = useRef(false);
+  screenSharingRef.current = isScreenSharing;
+  handRaisedRef.current = isHandRaised;
+
+  // Serveurs ICE (STUN/TURN), récupérés du serveur avec des identifiants
+  // temporaires. Sans eux, un participant derrière un NAT strict ou un réseau
+  // d'entreprise ne peut pas joindre le SFU du tout.
+  const iceServersRef = useRef([]);
+
   const applyLocalStream = useCallback((stream) => {
     localStreamRef.current = stream;
     setLocalStream(stream);
@@ -61,6 +80,82 @@ export default function useMediasoup(meetingId, userId, userName) {
   // plutôt que de proposer une action vouée à échouer.
   const canShareScreen =
     typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
+
+  /**
+   * Ferme tous les objets mediasoup du client, sans toucher au flux local ni au
+   * socket. Appelé avant de rejouer une session après reconnexion : côté
+   * serveur, le peer a été détruit à la déconnexion, donc les transports,
+   * producers et consumers d'avant ne correspondent plus à rien.
+   *
+   * Déclaré ici, avant `connectToServer`, parce que le gestionnaire de
+   * reconnexion s'en sert — le référencer plus bas provoquerait une erreur de
+   * portée à l'évaluation du tableau de dépendances.
+   */
+  const resetMediaSession = useCallback(() => {
+    videoProducerRef.current?.close();
+    audioProducerRef.current?.close();
+    videoProducerRef.current = null;
+    audioProducerRef.current = null;
+
+    consumersRef.current.forEach((consumer) => consumer.close());
+    consumersRef.current.clear();
+
+    producerTransportRef.current?.close();
+    producerTransportRef.current = null;
+    consumerTransportRef.current?.close();
+    consumerTransportRef.current = null;
+    consumerTransportPromiseRef.current = null;
+
+    // Le device doit être rechargé : si la salle s'était vidée entre-temps, le
+    // router a été fermé et recréé, avec de nouvelles capacités RTP.
+    deviceRef.current = null;
+
+    producerOwnersRef.current.clear();
+    peersRef.current.clear();
+    setRemoteStreams({});
+    setRemotePeers({});
+    setRemoteMediaState({});
+    setRemoteScreenShares({});
+  }, []);
+
+  /**
+   * Récupère les serveurs ICE. Les identifiants TURN expirent, donc on les
+   * redemande à chaque établissement de session — y compris après une
+   * reconnexion, où ceux d'avant peuvent être périmés.
+   *
+   * Un échec n'est pas bloquant : on repart en connexion directe, ce qui suffit
+   * à la grande majorité des réseaux.
+   */
+  const loadIceServers = useCallback(async () => {
+    try {
+      const response = await fetch('/api/turn', { cache: 'no-store' });
+      const data = await response.json();
+      iceServersRef.current = data.iceServers || [];
+      console.log(`🧊 ${iceServersRef.current.length} serveur(s) ICE chargé(s)`);
+    } catch (err) {
+      console.warn('⚠️ Serveurs ICE indisponibles, connexion directe uniquement:', err);
+      iceServersRef.current = [];
+    }
+  }, []);
+
+  /**
+   * Options ICE communes aux deux transports.
+   *
+   * `?forceRelay` dans l'URL impose le passage par TURN. Indispensable pour le
+   * tester : sur son propre réseau, ICE choisira toujours le chemin direct, et
+   * on ne saurait jamais si le relais fonctionne avant qu'un utilisateur
+   * réellement bloqué ne se plaigne.
+   */
+  const iceOptions = useCallback(() => {
+    const forceRelay =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).has('forceRelay');
+
+    return {
+      iceServers: iceServersRef.current,
+      ...(forceRelay ? { iceTransportPolicy: 'relay' } : {}),
+    };
+  }, []);
 
   const markRemoteMedia = useCallback((peerId, kind, paused) => {
     if (!peerId || !kind) return;
@@ -83,12 +178,44 @@ export default function useMediasoup(meetingId, userId, userName) {
       socketRef.current.on('connect', () => {
         console.log('✅ Connecté au serveur');
         setIsConnected(true);
+
+        // Reconnexion après coupure réseau. Le serveur a détruit le peer à la
+        // déconnexion (`cleanupPeer`), et ce socket porte un nouvel
+        // identifiant : sans rejouer l'adhésion, l'interface afficherait
+        // « connecté » alors que la personne est sortie de la réunion — une
+        // panne silencieuse, pire qu'un échec franc.
+        // `localStreamRef` sert de garde : après un départ volontaire le flux
+        // est libéré, et il n'y a plus rien à reconstruire.
+        if (hasJoinedRef.current && !rejoiningRef.current && localStreamRef.current) {
+          rejoiningRef.current = true;
+          setIsReconnecting(true);
+
+          (async () => {
+            try {
+              console.log('🔄 Reconnexion : reconstruction de la session…');
+              resetMediaSession();
+              await establishSessionRef.current?.(localStreamRef.current);
+              console.log('✅ Session reconstruite');
+              setError(null);
+            } catch (err) {
+              console.error('❌ Reconstruction de session impossible:', err);
+              setError('La reconnexion a échoué. Rechargez la page pour revenir dans la réunion.');
+            } finally {
+              rejoiningRef.current = false;
+              setIsReconnecting(false);
+            }
+          })();
+        }
+
         resolve();
       });
 
       socketRef.current.on('disconnect', () => {
         console.log('❌ Déconnecté du serveur');
         setIsConnected(false);
+        // Signalé dès la coupure, pas seulement au retour : c'est pendant
+        // l'interruption que l'utilisateur a besoin de comprendre le silence.
+        if (hasJoinedRef.current) setIsReconnecting(true);
       });
 
       socketRef.current.on('connect_error', (err) => {
@@ -110,7 +237,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       socketRef.current.on('peer-screen-share', handlePeerScreenShare);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [resetMediaSession]);
 
   /**
    * Rejoindre la salle via Socket.io
@@ -178,7 +305,10 @@ export default function useMediasoup(meetingId, userId, userName) {
         }
 
         try {
-          producerTransportRef.current = deviceRef.current.createSendTransport(response.params);
+          producerTransportRef.current = deviceRef.current.createSendTransport({
+            ...response.params,
+            ...iceOptions(),
+          });
 
           // Événement connect
           producerTransportRef.current.on('connect', async ({ dtlsParameters }, callback, errback) => {
@@ -223,7 +353,7 @@ export default function useMediasoup(meetingId, userId, userName) {
         }
       });
     });
-  }, []);
+  }, [iceOptions]);
 
   /**
    * Produire audio ou vidéo
@@ -304,7 +434,10 @@ export default function useMediasoup(meetingId, userId, userName) {
         }
 
         try {
-          const consumerTransport = deviceRef.current.createRecvTransport(response.params);
+          const consumerTransport = deviceRef.current.createRecvTransport({
+            ...response.params,
+            ...iceOptions(),
+          });
 
           consumerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
             try {
@@ -328,7 +461,7 @@ export default function useMediasoup(meetingId, userId, userName) {
         }
       });
     });
-  }, []);
+  }, [iceOptions]);
 
   /**
    * Consommer un producer distant
@@ -654,72 +787,110 @@ export default function useMediasoup(meetingId, userId, userName) {
   }, [initLocalMedia]);
 
   /**
-   * Rejoindre une réunion
+   * Établit la session dans la salle à partir d'un flux local déjà obtenu :
+   * adhésion, chargement du device, consommation des flux présents, création du
+   * transport d'émission et production.
+   *
+   * Extrait de `joinMeeting` pour être rejouable tel quel après une coupure
+   * réseau — c'est exactement la séquence qu'il faut refaire, et la dupliquer
+   * garantirait qu'une des deux copies dérive.
+   */
+  const establishSession = useCallback(async (stream) => {
+    // Avant tout transport : les identifiants TURN sont datés, il faut des
+    // frais — en particulier après une reconnexion tardive.
+    await loadIceServers();
+
+    const roomResponse = await joinRoomSocket(meetingId, userName);
+
+    await loadDevice();
+
+    if (roomResponse.forceMuted) setIsForceMuted(true);
+
+    // Consommer les flux des participants déjà présents dans la salle
+    // (sinon on ne voit/entend que ceux qui rejoignent APRÈS nous)
+    for (const peer of roomResponse.peers || []) {
+      if (peer.sharingScreen) {
+        setRemoteScreenShares((prev) => ({ ...prev, [peer.peerId]: true }));
+      }
+      for (const remoteProducer of peer.producers || []) {
+        try {
+          await consume(remoteProducer.id, peer.peerId, peer.name);
+          markRemoteMedia(peer.peerId, remoteProducer.kind, !!remoteProducer.paused);
+        } catch (err) {
+          console.error(`❌ Erreur consommation flux existant de ${peer.name}:`, err);
+        }
+      }
+    }
+
+    await createProducerTransport();
+
+    if (stream.getVideoTracks().length > 0) {
+      await produce('video', stream);
+    }
+
+    if (stream.getAudioTracks().length > 0) {
+      await produce('audio', stream);
+
+      const audioTrack = stream.getAudioTracks()[0];
+
+      // Micro coupé (dans le lobby, ou avant la coupure réseau) : la piste est
+      // désactivée mais le producer vient d'être créé actif. Sans cette mise en
+      // pause, on entrerait en émettant alors que l'interface affiche « coupé ».
+      if (audioTrack && !audioTrack.enabled && audioProducerRef.current) {
+        await audioProducerRef.current.pause();
+        socketRef.current?.emit('pauseProducer', { producerId: audioProducerRef.current.id });
+        setIsMicOn(false);
+      }
+
+      // Le serveur peut aussi avoir pausé ce producer d'office si l'hôte avait
+      // déjà coupé ce micro : on aligne l'interface plutôt que d'afficher un
+      // micro ouvert qui n'émet rien.
+      if (audioProducerRef.current?.paused) {
+        if (audioTrack) audioTrack.enabled = false;
+        setIsMicOn(false);
+      }
+    }
+
+    // Signaux éphémères à réémettre : le serveur les a oubliés avec le peer.
+    // Sans ça, une main levée disparaîtrait chez les autres après une coupure,
+    // et un partage d'écran serait affiché rogné comme une caméra.
+    if (screenSharingRef.current) {
+      socketRef.current?.emit('screen-share', { sharing: true });
+    }
+    if (handRaisedRef.current) {
+      socketRef.current?.emit('toggle-hand', { raised: true });
+    }
+  }, [
+    meetingId,
+    userName,
+    joinRoomSocket,
+    loadDevice,
+    consume,
+    createProducerTransport,
+    produce,
+    markRemoteMedia,
+    loadIceServers,
+  ]);
+
+  // Le gestionnaire `connect` est enregistré une seule fois et capturerait une
+  // version périmée d'`establishSession` ; il passe donc par cette ref.
+  establishSessionRef.current = establishSession;
+
+  /**
+   * Rejoindre une réunion.
    */
   const joinMeeting = useCallback(async () => {
     try {
       console.log('🚀 Démarrage de la session MediaSoup...');
 
-      // 1. Connexion au serveur
       await connectToServer();
 
-      // 2. Média local — déjà obtenu si l'on passe par le lobby.
+      // Média local — déjà obtenu si l'on passe par le lobby.
       const stream = localStreamRef.current || await initLocalMedia();
 
-      // 3. Rejoindre la salle
-      const roomResponse = await joinRoomSocket(meetingId, userName);
+      await establishSession(stream);
 
-      // 4. Charger le device MediaSoup
-      await loadDevice();
-
-      if (roomResponse.forceMuted) setIsForceMuted(true);
-
-      // 4.5 Consommer les flux des participants déjà présents dans la salle
-      // (sinon on ne voit/entend que ceux qui rejoignent APRÈS nous)
-      for (const peer of roomResponse.peers || []) {
-        if (peer.sharingScreen) {
-          setRemoteScreenShares(prev => ({ ...prev, [peer.peerId]: true }));
-        }
-        for (const remoteProducer of peer.producers || []) {
-          try {
-            await consume(remoteProducer.id, peer.peerId, peer.name);
-            markRemoteMedia(peer.peerId, remoteProducer.kind, !!remoteProducer.paused);
-          } catch (err) {
-            console.error(`❌ Erreur consommation flux existant de ${peer.name}:`, err);
-          }
-        }
-      }
-
-      // 5. Créer le transport de production
-      await createProducerTransport();
-
-      // 6. Produire audio et vidéo
-      if (stream.getVideoTracks().length > 0) {
-        await produce('video', stream);
-      }
-      if (stream.getAudioTracks().length > 0) {
-        await produce('audio', stream);
-
-        const audioTrack = stream.getAudioTracks()[0];
-
-        // Micro coupé dans le lobby : la piste est désactivée mais le producer
-        // vient d'être créé actif. Sans cette mise en pause, on entrerait dans
-        // la réunion en émettant alors que l'interface affiche « coupé ».
-        if (audioTrack && !audioTrack.enabled && audioProducerRef.current) {
-          await audioProducerRef.current.pause();
-          socketRef.current?.emit('pauseProducer', { producerId: audioProducerRef.current.id });
-          setIsMicOn(false);
-        }
-
-        // Le serveur peut aussi avoir pausé ce producer d'office si l'hôte
-        // avait déjà coupé ce micro : on aligne l'interface plutôt que
-        // d'afficher un micro ouvert qui n'émet rien.
-        if (audioProducerRef.current?.paused) {
-          if (audioTrack) audioTrack.enabled = false;
-          setIsMicOn(false);
-        }
-      }
-
+      hasJoinedRef.current = true;
       console.log('✅ Réunion rejointe avec succès');
       // Renvoie l'issue plutôt que de laisser l'appelant inspecter `error` :
       // cet état ne serait pas encore à jour dans sa closure au retour du await.
@@ -729,18 +900,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       setError(err.message || 'Erreur lors de la connexion');
       return false;
     }
-  }, [
-    meetingId,
-    userName,
-    connectToServer,
-    initLocalMedia,
-    joinRoomSocket,
-    loadDevice,
-    consume,
-    createProducerTransport,
-    produce,
-    markRemoteMedia
-  ]);
+  }, [connectToServer, initLocalMedia, establishSession]);
 
   /**
    * Quitter une réunion
@@ -777,6 +937,12 @@ export default function useMediasoup(meetingId, userId, userName) {
       socketRef.current.disconnect();
       socketRef.current = null;
     }
+
+    // Départ volontaire : plus aucune reconnexion ne doit tenter de
+    // reconstruire la session.
+    hasJoinedRef.current = false;
+    rejoiningRef.current = false;
+    setIsReconnecting(false);
 
     // Réinitialiser les états
     setRemoteStreams({});
@@ -1020,6 +1186,7 @@ export default function useMediasoup(meetingId, userId, userName) {
     remoteMediaState,
     remoteScreenShares,
     isForceMuted,
+    isReconnecting,
     error,
     clearError,
     canShareScreen,
