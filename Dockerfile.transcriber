@@ -1,0 +1,27 @@
+# JALON 2 — Mesure du RTF de Whisper hors ligne
+#
+# Image volontairement jetable : elle ne sert qu'à mesurer, pas à tourner en
+# service. Le service de transcription du jalon 3 partira de cette base.
+
+FROM python:3.11-slim
+
+# libgomp1 est requis par CTranslate2 (le runtime de faster-whisper) pour son
+# parallélisme OpenMP. Absent de l'image slim, et son absence ne se manifeste
+# qu'à l'import, par une erreur de bibliothèque partagée peu explicite.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir faster-whisper
+
+WORKDIR /app
+COPY transcriber/measure.py ./
+
+# Réglages imposés par le cahier des charges (§4.1, §8.2) :
+#  · 2 threads — au-delà, rendements décroissants et contention avec mediasoup
+#  · MALLOC_ARENA_MAX — glibc allouerait sinon une arène par thread, et
+#    l'empreinte mémoire se multiplierait sur une machine sans swap
+ENV OMP_NUM_THREADS=2
+ENV MALLOC_ARENA_MAX=2
+
+ENTRYPOINT ["python", "-u", "measure.py"]
