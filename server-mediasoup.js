@@ -54,7 +54,10 @@ app.get('/health', (req, res) => {
 // d'acceptation du jalon 1, une fuite de port étant une panne qui n'apparaît
 // qu'après plusieurs réunions.
 app.get('/transcription/stats', (req, res) => {
-  res.json(transcriptionFork.getStats());
+  // Sans cet en-tête, le navigateur ressert la réponse précédente et on croit
+  // lire un état actuel alors qu'on relit celui d'il y a une heure.
+  res.set('Cache-Control', 'no-store');
+  res.json({ ...transcriptionFork.getStats(), now: new Date().toISOString() });
 });
 
 app.use(express.json());
