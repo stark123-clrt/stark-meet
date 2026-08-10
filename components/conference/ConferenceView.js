@@ -24,16 +24,20 @@ function Control({ icon: Icon, label, onClick, disabled, active = true, tone = '
   const base =
     'w-12 h-12 rounded-full flex items-center justify-center flex-none transition-colors duration-200 ease-standard disabled:opacity-40 disabled:cursor-not-allowed';
 
+  // Micro et caméra actifs sont en bleu plein, comme dans le template : ce sont
+  // les deux réglages qu'on cherche du regard en permanence, et un fond neutre
+  // ne disait pas assez clairement « c'est ouvert ».
   const tones = {
     neutral: active
-      ? 'bg-slate-100 text-slate-950 hover:bg-slate-200'
+      ? 'bg-brand-500 text-white hover:bg-brand-600'
       : 'bg-error-500 text-white hover:brightness-110',
     accent: active
-      ? 'bg-brand-50 text-brand-500 hover:bg-brand-100'
-      : 'bg-slate-100 text-slate-950 hover:bg-slate-200',
+      ? 'bg-brand-50 text-brand-500 hover:brightness-95'
+      : 'bg-slate-100 text-slate-700 hover:bg-slate-200',
     warning: active
-      ? 'bg-warning-50 text-warning-500 hover:brightness-95'
-      : 'bg-slate-100 text-slate-950 hover:bg-slate-200',
+      ? 'bg-warning-500 text-white hover:brightness-110'
+      : 'bg-slate-100 text-slate-700 hover:bg-slate-200',
+    record: 'bg-error-50 text-error-500 ring-1 ring-error-500/30',
   };
 
   return (
@@ -105,6 +109,23 @@ export default function ConferenceView({
 
   // Mute forcé : deux sources concordantes — la ligne en base (qui survit à un
   // rechargement) et le signal direct du SFU (immédiat, déjà appliqué serveur).
+  // État micro/caméra indexé par utilisateur, pour la liste des participants.
+  // Le SFU raisonne en `peerId` (identifiant de socket) alors que la liste
+  // vient de la base et raisonne en profile_id/guest_id : cette table fait le
+  // pont, et y ajoute mon propre état, que le SFU ne m'annonce pas à moi-même.
+  const participantMedia = {};
+  for (const [peerId, peer] of Object.entries(remotePeers)) {
+    if (!peer.userId) continue;
+    const state = remoteMediaState?.[peerId] || {};
+    participantMedia[peer.userId] = {
+      micOn: !state.audioPaused,
+      camOn: !state.videoPaused,
+    };
+  }
+  if (currentUserId) {
+    participantMedia[currentUserId] = { micOn: isMicOn, camOn: isVideoOn };
+  }
+
   const myParticipantRow = participants?.find((p) => (p.profile_id || p.guest_id) === currentUserId);
   const isForceMuted = !!myParticipantRow?.force_muted || isForceMutedBySignal;
 
@@ -177,6 +198,18 @@ export default function ConferenceView({
             </span>
           )}
 
+          {/* Carte d'identité, à droite de l'en-tête comme dans le template :
+              elle rappelle sous quel nom et quel rôle on est dans la salle. */}
+          <div className="hidden xl:flex items-center gap-2.5 h-11 pl-2.5 pr-3 rounded-md border border-slate-200 bg-slate-50">
+            <Avatar size="sm" name={currentUserName} seed={currentUserId} />
+            <div className="flex flex-col min-w-0 max-w-[130px]">
+              <span className="text-[13px] font-medium truncate leading-tight">{currentUserName}</span>
+              <span className="text-[11.5px] text-slate-500 leading-tight">
+                {isHost ? 'Modérateur' : 'Participant'}
+              </span>
+            </div>
+          </div>
+
           <button
             onClick={() => setShowDeviceSelector(true)}
             title="Périphériques"
@@ -241,6 +274,7 @@ export default function ConferenceView({
           participants={connectedParticipants}
           waitingParticipants={waitingParticipants}
           raisedHands={raisedHands}
+          participantMedia={participantMedia}
           onAdmit={onAdmit}
           onDeny={onDeny}
           onForceMute={onForceMute}
@@ -281,19 +315,21 @@ export default function ConferenceView({
             disabled={isScreenSharing}
             active={isVideoOn}
           />
+          {/* Bleu clair = disponible, bleu plein = partage en cours. */}
           <Control
             icon={isScreenSharing ? MonitorOff : Monitor}
             label={canShareScreen ? "Partager l'écran" : "Partage d'écran indisponible sur ce navigateur"}
             onClick={isScreenSharing ? stopScreenShare : startScreenShare}
             disabled={!canShareScreen && !isScreenSharing}
-            tone="accent"
-            active={isScreenSharing}
+            tone={isScreenSharing ? 'neutral' : 'accent'}
+            active
           />
           {/* L'enregistrement figure dans le template mais n'existe pas encore :
               bouton présent et désactivé, plutôt qu'une action qui échouerait. */}
           <Control
             icon={Circle}
             label="Enregistrement — arrivera avec le plan Équipe"
+            tone="record"
             disabled
           />
           <Control

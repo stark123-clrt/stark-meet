@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { MicOff, Hand, Maximize2, Minimize2 } from 'lucide-react';
+import { Mic, MicOff, Hand, Maximize2, Minimize2 } from 'lucide-react';
 import { initialsOf } from '@/lib/identity';
 
 // Palette de dégradés du design (mockup Claude Design) — assignée de façon
@@ -272,10 +272,12 @@ export default function VideoCard({
 
       {isStage ? (
         <>
-          <span className="absolute top-3 left-3 sm:top-4 sm:left-4 z-20 flex items-center gap-1.5 font-mono text-[10px] sm:text-[10.5px] font-semibold tracking-wide text-white bg-black/45 rounded px-2 py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-success-500 inline-block" />
-            INTERVENANT ACTIF
-          </span>
+          {/* Pas de bandeau « intervenant actif » ici : la grande vue ne
+              s'affiche que pour un partage d'écran ou un épinglage, et VideoGrid
+              l'annonce déjà au-dessus. L'y répéter serait faux la plupart du
+              temps — la personne mise en avant n'est pas celle qui parle.
+              Le template place à cet endroit un chronomètre d'enregistrement,
+              qui promettrait une capture inexistante. */}
           <div className="absolute inset-x-0 bottom-0 h-20 sm:h-[90px] z-10 pointer-events-none bg-gradient-to-t from-black/60 to-transparent" />
           <div className="absolute left-3 bottom-2.5 sm:left-5 sm:bottom-[18px] z-20 flex items-center gap-2.5">
             <span className="text-sm sm:text-base font-semibold text-white drop-shadow">{participant?.name || 'Participant'}</span>
@@ -300,20 +302,26 @@ export default function VideoCard({
         </>
       ) : (
         <>
-          <div className="absolute inset-x-0 bottom-0 h-9 z-10 pointer-events-none bg-gradient-to-t from-black/60 to-transparent" />
-          <span className="absolute left-2 bottom-1.5 right-7 z-20 text-[11px] sm:text-[11.5px] font-medium text-white truncate">
+          {/* Étiquette du nom en pastille sombre, comme dans le template. */}
+          <span className="absolute left-2 bottom-2 max-w-[calc(100%-52px)] z-20 px-2.5 py-1 rounded-full bg-black/55 text-[11px] sm:text-[11.5px] font-medium text-white truncate">
             {shortName}
           </span>
           {isHost && (
-            <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-20 font-mono text-[8.5px] sm:text-[9px] font-bold text-white bg-success-500 rounded px-1.5 py-0.5">
-              HÔTE
+            <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-20 font-mono text-[8.5px] sm:text-[9px] font-bold tracking-overline uppercase text-white bg-brand-500 rounded-xs px-1.5 py-0.5">
+              Hôte
             </span>
           )}
-          {!isAudioActive && (
-            <span className="absolute right-1.5 bottom-1.5 z-20 w-5 h-5 rounded-full bg-error-500/25 flex items-center justify-center">
-              <MicOff className="h-2.5 w-2.5 text-error-500" />
-            </span>
-          )}
+          {/* Pastille micro affichée en permanence — bleue si ouvert, rouge si
+              coupé. N'apparaître qu'en cas de coupure laissait planer un doute :
+              on ne savait pas si l'information était absente ou le micro ouvert. */}
+          <span
+            className={`absolute right-2 bottom-2 z-20 w-6 h-6 rounded-full flex items-center justify-center ${
+              isAudioActive ? 'bg-brand-500 text-white' : 'bg-error-500 text-white'
+            }`}
+            title={isAudioActive ? 'Micro ouvert' : 'Micro coupé'}
+          >
+            {isAudioActive ? <Mic className="h-3 w-3" /> : <MicOff className="h-3 w-3" />}
+          </span>
         </>
       )}
     </div>

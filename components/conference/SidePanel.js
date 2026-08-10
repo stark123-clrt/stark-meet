@@ -1,15 +1,17 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Mic, MicOff, UserX, Hand, UserPlus } from 'lucide-react';
+import {
+  X, Mic, MicOff, Video, VideoOff, UserX, Hand, UserPlus, ChevronDown,
+} from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
 import useMeetingChat from '@/hooks/useMeetingChat';
 import ChatPanel from './ChatPanel';
 
 /**
- * Vrai quand le panneau latéral est affiché en colonne fixe (le point de
- * rupture `lg` de Tailwind), plutôt qu'en superposition mobile. Mesuré dans un
- * effet et non pendant le rendu, pour ne pas diverger du rendu serveur.
+ * Vrai quand le panneau est affiché en colonne fixe (point de rupture `lg`),
+ * plutôt qu'en feuille mobile. Mesuré dans un effet et non pendant le rendu,
+ * pour ne pas diverger du rendu serveur.
  */
 function useIsWidePanel() {
   const [isWide, setIsWide] = useState(false);
@@ -25,10 +27,36 @@ function useIsWidePanel() {
   return isWide;
 }
 
+function SectionHeader({ title, count, open, onToggle, action }) {
+  return (
+    <div className="flex-none flex items-center gap-2 px-4 h-[52px] border-b border-slate-200">
+      <button
+        onClick={onToggle}
+        className="flex items-center gap-1.5 min-w-0 text-left"
+        aria-expanded={open}
+      >
+        <h2 className="font-display font-bold text-[16px] tracking-heading truncate">{title}</h2>
+        {typeof count === 'number' && (
+          <span className="text-[13px] text-slate-500 flex-none">· {count}</span>
+        )}
+        <ChevronDown
+          className={`h-4 w-4 flex-none text-slate-500 transition-transform duration-200 ${
+            open ? '' : '-rotate-90'
+          }`}
+        />
+      </button>
+      {action && <div className="ml-auto flex-none">{action}</div>}
+    </div>
+  );
+}
+
 /**
- * SidePanel — panneau latéral à onglets Discussion / Participants, fidèle
- * au template Claude Design : colonne fixe de 328px toujours visible sur
- * grand écran, superposition plein écran fermable sur mobile.
+ * Panneau latéral : Participants et Discussion **empilés**, tous deux visibles
+ * en même temps comme dans le template — et non en onglets, qui obligeaient à
+ * choisir entre voir la salle et suivre la conversation.
+ *
+ * Chaque section se replie : sur la feuille mobile, la hauteur ne suffit pas
+ * pour afficher les deux confortablement.
  */
 export default function SidePanel({
   meetingId,
@@ -39,6 +67,7 @@ export default function SidePanel({
   participants,
   waitingParticipants,
   raisedHands,
+  participantMedia,
   onAdmit,
   onDeny,
   onForceMute,
@@ -48,21 +77,25 @@ export default function SidePanel({
   onUnreadChange,
   onCopyInvite,
 }) {
-  const [tab, setTab] = useState('participants');
   const admitted = participants || [];
   const waiting = waitingParticipants || [];
-  const totalCount = admitted.length + waiting.length;
 
-  // Le chat est piloté ici, et non dans l'onglet Discussion : les onglets sont
-  // montés/démontés par le ternaire plus bas, si bien qu'un état vivant dans
-  // l'onglet serait détruit — et son abonnement socket coupé — dès qu'on
-  // regarde la liste des participants.
-  //
-  // La discussion compte comme lue lorsqu'elle est réellement à l'écran :
-  // onglet actif ET panneau visible. Sur grand écran le panneau est toujours
-  // là ; sur mobile c'est une superposition qu'on peut refermer.
   const isWidePanel = useIsWidePanel();
-  const chatVisible = tab === 'discussion' && (isWidePanel || mobileOpen);
+  const [participantsOpen, setParticipantsOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(true);
+
+  // Sur mobile, la liste démarre repliée pour laisser la place à la discussion ;
+  // sur grand écran les deux tiennent sans se gêner.
+  useEffect(() => {
+    setParticipantsOpen(isWidePanel);
+  }, [isWidePanel]);
+
+  // Le chat est piloté ici : les sections sont montées en permanence, donc son
+  // abonnement socket ne se coupe plus quand on regarde les participants —
+  // c'était le cas avec les onglets, qui démontaient l'un pour afficher l'autre.
+  //
+  // Il compte comme lu dès que le panneau est à l'écran et la section ouverte.
+  const chatVisible = chatOpen && (isWidePanel || mobileOpen);
 
   const chat = useMeetingChat({
     meetingId,
@@ -100,65 +133,75 @@ export default function SidePanel({
         <div className="fixed inset-0 z-30 bg-slate-950/40 lg:hidden" onClick={onCloseMobile} />
       )}
 
-      {/* Sur mobile : feuille ancrée en bas, occupant 72 % de la hauteur, la
-          réunion restant visible au-dessus — c'est ce que font Zoom et Teams.
-          Le panneau couvrait auparavant tout l'écran, si bien qu'ouvrir la
-          discussion faisait entièrement disparaître les participants.
-          Sur grand écran, rien ne change : colonne fixe de 328 px. */}
+      {/* Sur mobile : feuille ancrée en bas, la réunion restant visible
+          au-dessus — comme Zoom et Teams. Sur grand écran : colonne de 344 px. */}
       <div
         className={`bg-surface border-t lg:border-t-0 lg:border-l border-slate-200 flex-col min-h-0
-          fixed inset-x-0 bottom-0 h-[72vh] rounded-t-2xl z-40 shadow-overlay
-          lg:static lg:z-auto lg:flex-none lg:inset-auto lg:h-auto lg:w-[328px] lg:rounded-none lg:shadow-none ${
+          fixed inset-x-0 bottom-0 h-[78vh] rounded-t-2xl z-40 shadow-overlay
+          lg:static lg:z-auto lg:flex-none lg:inset-auto lg:h-auto lg:w-[344px] lg:rounded-none lg:shadow-none ${
             mobileOpen ? 'flex' : 'hidden lg:flex'
           }`}
       >
-        {/* Poignée de préhension : indique que la feuille se referme. */}
-        <div className="lg:hidden flex-none flex justify-center pt-2 pb-1">
-          <span className="w-9 h-1 rounded-full bg-slate-300" />
-        </div>
-
-        <div className="flex flex-none items-center border-b border-slate-200">
-          <button
-            onClick={() => setTab('discussion')}
-            className={`relative flex-1 text-center py-3.5 text-[13.5px] font-mono transition-colors ${
-              tab === 'discussion' ? 'text-slate-950 bg-slate-50 border-b-2 border-brand-500' : 'text-slate-500'
-            }`}
-          >
-            Discussion
-            {chat.unreadCount > 0 && (
-              <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-brand-500 text-white text-[10px] font-bold align-middle">
-                {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setTab('participants')}
-            className={`flex-1 text-center py-3.5 text-[13.5px] font-mono transition-colors ${
-              tab === 'participants' ? 'text-slate-950 bg-slate-50 border-b-2 border-brand-500' : 'text-slate-500'
-            }`}
-          >
-            Participants · {totalCount}
-          </button>
-          <button onClick={onCloseMobile} className="lg:hidden p-3 text-slate-500 hover:text-slate-950 flex-none">
+        <div className="lg:hidden flex-none flex items-center justify-between pt-2 pb-1 px-3">
+          <span className="w-9 h-1 rounded-full bg-slate-300 mx-auto" />
+          <button onClick={onCloseMobile} className="p-1 text-slate-500 hover:text-slate-950">
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {tab === 'participants' ? (
-          <ParticipantsTab
-            waiting={waiting}
-            admitted={admitted}
-            isHost={isHost}
-            onAdmit={onAdmit}
-            onDeny={onDeny}
-            onForceMute={onForceMute}
-            onRemove={onRemove}
-            raisedHands={raisedHands}
-            processingIds={processingIds}
-            runAction={runAction}
-            onCopyInvite={onCopyInvite}
-          />
-        ) : (
+        {/* ---- Participants ---- */}
+        <SectionHeader
+          title="Participants"
+          count={admitted.length + waiting.length}
+          open={participantsOpen}
+          onToggle={() => setParticipantsOpen((v) => !v)}
+          action={
+            <button
+              onClick={onCopyInvite}
+              title="Copier le lien d'invitation"
+              className="h-8 px-3 flex items-center gap-1.5 rounded-sm border border-slate-200 bg-surface text-[13px] font-medium text-slate-950 hover:bg-slate-100 transition-colors"
+            >
+              Ajouter
+              <UserPlus className="h-3.5 w-3.5 text-brand-500" />
+            </button>
+          }
+        />
+
+        {participantsOpen && (
+          <div className={`overflow-y-auto scrollbar-hide px-3 py-3 ${chatOpen ? 'flex-none max-h-[42%]' : 'flex-1 min-h-0'}`}>
+            <ParticipantsList
+              waiting={waiting}
+              admitted={admitted}
+              isHost={isHost}
+              currentUserId={currentUserId}
+              raisedHands={raisedHands}
+              participantMedia={participantMedia}
+              onAdmit={onAdmit}
+              onDeny={onDeny}
+              onForceMute={onForceMute}
+              onRemove={onRemove}
+              processingIds={processingIds}
+              runAction={runAction}
+            />
+          </div>
+        )}
+
+        {/* ---- Discussion ---- */}
+        <SectionHeader
+          title="Discussion"
+          count={chat.messages.length}
+          open={chatOpen}
+          onToggle={() => setChatOpen((v) => !v)}
+          action={
+            chat.unreadCount > 0 && !chatVisible ? (
+              <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-brand-500 text-white text-[11px] font-bold">
+                {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
+              </span>
+            ) : null
+          }
+        />
+
+        {chatOpen && (
           <ChatPanel
             messages={chat.messages}
             loading={chat.loading}
@@ -172,9 +215,26 @@ export default function SidePanel({
   );
 }
 
-function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMute, onRemove, raisedHands, processingIds, runAction, onCopyInvite }) {
-  // Les mains levées passent en tête : c'est l'intérêt du geste, l'hôte doit
-  // les voir sans avoir à parcourir toute la liste.
+/** Icônes micro et caméra d'un participant, comme dans le template. */
+function MediaState({ micOn, camOn }) {
+  return (
+    <span className="flex items-center gap-1.5 flex-none">
+      <span className={micOn ? 'text-brand-500' : 'text-error-500'} title={micOn ? 'Micro ouvert' : 'Micro coupé'}>
+        {micOn ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
+      </span>
+      <span className={camOn ? 'text-brand-500' : 'text-error-500'} title={camOn ? 'Caméra active' : 'Caméra coupée'}>
+        {camOn ? <Video className="h-3.5 w-3.5" /> : <VideoOff className="h-3.5 w-3.5" />}
+      </span>
+    </span>
+  );
+}
+
+function ParticipantsList({
+  waiting, admitted, isHost, currentUserId, raisedHands, participantMedia,
+  onAdmit, onDeny, onForceMute, onRemove, processingIds, runAction,
+}) {
+  // Les mains levées passent en tête : c'est tout l'intérêt du geste, l'hôte
+  // doit les voir sans parcourir la liste.
   const ordered = [...admitted].sort((a, b) => {
     const aRaised = !!raisedHands?.[a.profile_id || a.guest_id];
     const bRaised = !!raisedHands?.[b.profile_id || b.guest_id];
@@ -182,39 +242,32 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
   });
 
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-hide p-4 flex flex-col gap-5 min-h-0">
-      {/* « Ajouter » du template : le geste concret est de copier le lien
-          d'invitation, puisqu'il n'y a pas d'annuaire à parcourir. */}
-      <button
-        onClick={onCopyInvite}
-        className="flex items-center justify-center gap-2 h-10 rounded-sm border border-slate-200 bg-surface text-[13.5px] font-medium text-slate-950 hover:bg-slate-100 transition-colors"
-      >
-        <UserPlus className="h-4 w-4 text-brand-500" />
-        Ajouter — copier le lien
-      </button>
-
+    <div className="flex flex-col gap-4">
       {isHost && waiting.length > 0 && (
-        <div className="flex flex-col gap-3 border border-warning-500/30 bg-warning-500/5 rounded-md p-3.5">
-          <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-warning-500">
-            <span className="w-1.5 h-1.5 rounded-full bg-warning-500 inline-block" />
-            SALLE D&apos;ATTENTE · {waiting.length}
+        <div className="flex flex-col gap-3 border border-warning-500/35 bg-warning-50 rounded-md p-3.5">
+          <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-overline uppercase text-warning-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-warning-500" />
+            Salle d&apos;attente · {waiting.length}
           </span>
           <div className="flex flex-col gap-2.5">
             {waiting.map((w) => (
               <div key={w.id} className="flex items-center gap-2.5">
-                <Avatar name={w.display_name} seed={w.profile_id || w.guest_id || w.id} />
-                <span className="flex-1 text-[13.5px] font-medium text-slate-950 truncate min-w-0">{w.display_name}</span>
+                <Avatar size="sm" name={w.display_name} seed={w.profile_id || w.guest_id || w.id} />
+                <span className="flex-1 text-[13.5px] font-medium text-slate-950 truncate min-w-0">
+                  {w.display_name}
+                </span>
                 <button
                   onClick={() => runAction(w.id, onAdmit)}
                   disabled={processingIds.has(w.id)}
-                  className="text-xs font-semibold px-2.5 py-1.5 rounded bg-success-500 text-white hover:brightness-110 transition disabled:opacity-50 flex-none"
+                  className="flex-none text-[12px] font-semibold px-2.5 py-1.5 rounded-sm bg-brand-500 text-white hover:bg-brand-600 transition-colors disabled:opacity-50"
                 >
                   {processingIds.has(w.id) ? '…' : 'Admettre'}
                 </button>
                 <button
                   onClick={() => runAction(w.id, onDeny)}
                   disabled={processingIds.has(w.id)}
-                  className="w-7 h-7 rounded bg-slate-100 text-slate-500 hover:text-slate-950 transition disabled:opacity-50 flex-none flex items-center justify-center"
+                  title="Refuser"
+                  className="flex-none w-7 h-7 rounded-sm bg-surface border border-slate-200 text-slate-500 hover:text-error-500 transition-colors disabled:opacity-50 flex items-center justify-center"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -224,55 +277,60 @@ function ParticipantsTab({ waiting, admitted, isHost, onAdmit, onDeny, onForceMu
         </div>
       )}
 
-      <div className="flex flex-col gap-1">
-        <span className="font-mono text-[10.5px] font-bold tracking-wide text-slate-500 pb-2">
-          DANS LA RÉUNION · {admitted.length}
-        </span>
+      <div className="flex flex-col gap-0.5">
         {ordered.map((p) => {
-          const handRaised = !!raisedHands?.[p.profile_id || p.guest_id];
+          const userId = p.profile_id || p.guest_id;
+          const handRaised = !!raisedHands?.[userId];
+          const media = participantMedia?.[userId] || { micOn: true, camOn: true };
+          const isMe = userId === currentUserId;
+
           return (
-          <div
-            key={p.id}
-            className={`flex items-center gap-2.5 py-2 px-1.5 rounded-md transition-colors group ${
-              handRaised ? 'bg-warning-50 ring-1 ring-warning-500/30' : 'hover:bg-slate-50'
-            }`}
-          >
-            <Avatar name={p.display_name} seed={p.profile_id || p.guest_id || p.id} />
-            <div className="flex-1 flex items-center gap-2 min-w-0">
-              <span className="text-[13.5px] font-medium text-slate-950 truncate">{p.display_name}</span>
-              {(p.role === 'host' || p.role === 'co-host') && (
-                <span className="font-mono text-[9px] font-bold tracking-wide text-success-500 border border-success-500/35 rounded px-1.5 py-0.5 flex-none">
-                  {p.role === 'host' ? 'HÔTE' : 'CO-HÔTE'}
+            <div
+              key={p.id}
+              className={`flex items-center gap-2.5 py-2 px-2 rounded-md transition-colors group ${
+                handRaised ? 'bg-warning-50 ring-1 ring-warning-500/30' : 'hover:bg-slate-50'
+              }`}
+            >
+              <Avatar size="sm" name={p.display_name} seed={userId || p.id} />
+
+              <div className="flex-1 flex items-center gap-2 min-w-0">
+                <span className="text-[13.5px] font-medium text-slate-950 truncate">
+                  {p.display_name}{isMe && ' (vous)'}
+                </span>
+                {(p.role === 'host' || p.role === 'co-host') && (
+                  <span className="flex-none font-mono text-[9px] font-bold tracking-overline uppercase text-brand-500 bg-brand-50 rounded-xs px-1.5 py-0.5">
+                    {p.role === 'host' ? 'Hôte' : 'Co-hôte'}
+                  </span>
+                )}
+              </div>
+
+              {handRaised && (
+                <span className="flex-none text-warning-500 animate-pulse" title="A levé la main">
+                  <Hand className="h-4 w-4" />
                 </span>
               )}
+
+              <MediaState micOn={media.micOn && !p.force_muted} camOn={media.camOn} />
+
+              {isHost && p.role !== 'host' && (
+                <div className="flex-none flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => onForceMute?.(p.id)}
+                    title={p.force_muted ? 'Réautoriser le micro' : 'Couper le micro'}
+                    className="w-[26px] h-[26px] rounded-sm text-slate-500 hover:text-slate-950 hover:bg-slate-100 flex items-center justify-center"
+                  >
+                    {p.force_muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => onRemove?.(p.id)}
+                    title="Exclure de la réunion"
+                    className="w-[26px] h-[26px] rounded-sm text-slate-500 hover:text-error-500 hover:bg-slate-100 flex items-center justify-center"
+                  >
+                    <UserX className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
-            {handRaised && (
-              <span className="text-warning-500 flex-none animate-pulse" title="A levé la main">
-                <Hand className="h-4 w-4" />
-              </span>
-            )}
-            <span className={p.force_muted ? 'text-error-500' : 'text-slate-500'}>
-              {p.force_muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
-            </span>
-            {isHost && p.role !== 'host' && (
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-none">
-                <button
-                  onClick={() => onForceMute?.(p.id)}
-                  className="w-[26px] h-[26px] rounded text-slate-500 hover:text-slate-950 hover:bg-slate-100 flex items-center justify-center"
-                  title={p.force_muted ? 'Réautoriser le micro' : 'Couper le micro'}
-                >
-                  {p.force_muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
-                </button>
-                <button
-                  onClick={() => onRemove?.(p.id)}
-                  className="w-[26px] h-[26px] rounded text-slate-500 hover:text-error-500 hover:bg-slate-100 flex items-center justify-center"
-                  title="Exclure de la réunion"
-                >
-                  <UserX className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-          </div>
           );
         })}
       </div>
