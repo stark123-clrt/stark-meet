@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { LogOut, Plus, Copy, Video, CalendarClock, Users, Settings } from 'lucide-react';
+import { LogOut, Plus, Copy, Video, CalendarClock, Users, Settings, Trash2, Check } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import CreateMeetingDialog from '@/components/dashboard/CreateMeetingDialog';
 import { initialsOf } from '@/lib/identity';
+import { ensureProfile } from '@/lib/ensureProfile';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -14,6 +15,10 @@ export default function DashboardPage() {
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [copiedId, setCopiedId] = useState(null);
 
   useEffect(() => {
     checkUser();
@@ -30,11 +35,11 @@ export default function DashboardPage() {
 
     setUser(authUser);
 
-    const { data: profileData } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', authUser.id)
-      .maybeSingle();
+    // Filet de sécurité : un compte arrivé par Google peut atterrir ici sans
+    // ligne `profiles` (session restaurée, page de retour interrompue…). Sans
+    // profil, la clé étrangère `meetings.host_id` ferait échouer toute
+    // création de réunion, avec une erreur incompréhensible pour l'utilisateur.
+    const profileData = await ensureProfile(supabase, authUser);
     setProfile(profileData);
 
     await loadMeetings(authUser.id);
@@ -68,6 +73,43 @@ export default function DashboardPage() {
   const copyLink = (meetingCode) => {
     const url = `${window.location.origin}/room/${meetingCode}`;
     navigator.clipboard.writeText(url);
+    setCopiedId(meetingCode);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
+
+  const handleDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+
+    const supabase = createClient();
+    // `.select()` renvoie les lignes réellement supprimées. Sans lui, une
+    // suppression bloquée par RLS ne remonte AUCUNE erreur — PostgREST répond
+    // simplement « 0 ligne affectée » — et l'interface effacerait la réunion
+    // de l'écran alors qu'elle est toujours en base. C'est exactement le genre
+    // de panne silencieuse qui donne l'impression que le bouton ne fait rien.
+    const { data, error } = await supabase
+      .from('meetings')
+      .delete()
+      .eq('id', pendingDelete.id)
+      .select();
+
+    setDeleting(false);
+
+    if (error) {
+      console.error('Suppression impossible:', error);
+      setDeleteError("La réunion n'a pas pu être supprimée.");
+      return;
+    }
+
+    if (!data || data.length === 0) {
+      setDeleteError(
+        "Suppression refusée par la base de données. La politique RLS de suppression sur « meetings » est probablement absente."
+      );
+      return;
+    }
+
+    setMeetings((prev) => prev.filter((m) => m.id !== pendingDelete.id));
+    setPendingDelete(null);
   };
 
   const statusPill = {
@@ -224,7 +266,16 @@ export default function DashboardPage() {
                       className="p-2 text-ink-500 hover:text-white hover:bg-white/[0.06] rounded-md transition-colors"
                       title="Copier le lien"
                     >
-                      <Copy className="h-3.5 w-3.5" />
+                      {copiedId === meeting.meeting_code
+                        ? <Check className="h-3.5 w-3.5 text-ok-500" />
+                        : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                    <button
+                      onClick={() => { setPendingDelete(meeting); setDeleteError(''); }}
+                      className="p-2 text-ink-500 hover:text-danger-500 hover:bg-white/[0.06] rounded-md transition-colors"
+                      title="Supprimer la réunion"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>
@@ -240,6 +291,47 @@ export default function DashboardPage() {
           onClose={() => setShowCreateDialog(false)}
           onCreated={handleCreated}
         />
+      )}
+
+      {pendingDelete && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="bg-ink-900 rounded-lg shadow-2xl max-w-md w-full border border-ink-700 p-6">
+            <h3 className="text-white font-semibold text-base">Supprimer cette réunion ?</h3>
+            <p className="text-mist-300 text-sm mt-2">
+              <span className="text-white font-medium">{pendingDelete.title}</span>{' '}
+              <span className="font-mono text-[12px] text-ink-500">({pendingDelete.meeting_code})</span>
+            </p>
+            {/* La cascade en base emporte participants et messages : mieux vaut
+                l'annoncer que de le faire découvrir après coup. */}
+            <p className="text-ink-500 text-sm mt-3">
+              La discussion et la liste des participants seront supprimées avec elle, et le lien
+              d&apos;invitation cessera de fonctionner. Cette action est définitive.
+            </p>
+
+            {deleteError && (
+              <div className="mt-4 bg-signal-500/10 border border-signal-500/20 text-signal-300 px-3.5 py-2.5 rounded-md text-sm">
+                {deleteError}
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setPendingDelete(null)}
+                disabled={deleting}
+                className="flex-1 px-4 py-2.5 border border-ink-700 text-mist-300 hover:text-white hover:bg-ink-800 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="flex-1 px-4 py-2.5 bg-danger-500 hover:brightness-110 text-white rounded-md text-sm font-semibold transition disabled:opacity-50"
+              >
+                {deleting ? 'Suppression…' : 'Supprimer'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
