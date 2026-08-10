@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { X, Video, Calendar } from 'lucide-react';
+import { X, Video, Calendar, Clock } from 'lucide-react';
 import { createClient } from '@/lib/supabase';
 import { generateMeetingCode } from '@/lib/meetingCode';
 import Switch from '@/components/ui/Switch';
@@ -9,13 +9,44 @@ import Switch from '@/components/ui/Switch';
 export default function CreateMeetingDialog({ hostId, defaultWaitingRoom = true, onClose, onCreated }) {
   const [title, setTitle] = useState('');
   const [scheduledAt, setScheduledAt] = useState('');
+  const [endsAt, setEndsAt] = useState('');
   const [waitingRoomEnabled, setWaitingRoomEnabled] = useState(defaultWaitingRoom);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  /** Renseigner le début propose une fin une heure plus tard, qu'on peut
+   *  changer : c'est la durée de réunion la plus courante. */
+  const handleStartChange = (value) => {
+    setScheduledAt(value);
+    setError('');
+    if (value && !endsAt) {
+      const suggested = new Date(new Date(value).getTime() + 60 * 60000);
+      // `toISOString` renvoie de l'UTC ; on reconstruit une valeur locale, sinon
+      // le champ afficherait une heure décalée par rapport à celle saisie.
+      const pad = (n) => String(n).padStart(2, '0');
+      setEndsAt(
+        `${suggested.getFullYear()}-${pad(suggested.getMonth() + 1)}-${pad(suggested.getDate())}` +
+        `T${pad(suggested.getHours())}:${pad(suggested.getMinutes())}`
+      );
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    // La durée est stockée en minutes (colonne `duration_minutes`) : c'est elle
+    // qui détermine ensuite si une réunion est encore en cours ou terminée.
+    let durationMinutes = 60;
+    if (scheduledAt && endsAt) {
+      const minutes = Math.round((new Date(endsAt) - new Date(scheduledAt)) / 60000);
+      if (minutes <= 0) {
+        setError("L'heure de fin doit être postérieure au début.");
+        return;
+      }
+      durationMinutes = minutes;
+    }
+
     setLoading(true);
 
     try {
@@ -27,6 +58,7 @@ export default function CreateMeetingDialog({ hostId, defaultWaitingRoom = true,
           title: title.trim() || 'Réunion sans titre',
           meeting_code: generateMeetingCode(),
           scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+          duration_minutes: durationMinutes,
           waiting_room_enabled: waitingRoomEnabled,
           status: scheduledAt ? 'scheduled' : 'active',
         })
@@ -76,18 +108,39 @@ export default function CreateMeetingDialog({ hostId, defaultWaitingRoom = true,
 
           <label className="block">
             <span className="block text-[13px] font-medium text-slate-700 mb-1.5">
-              Date et heure <span className="text-slate-500 font-normal">— vide pour démarrer maintenant</span>
+              Début <span className="text-slate-500 font-normal">— vide pour démarrer maintenant</span>
             </span>
             <div className="relative">
               <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
               <input
                 type="datetime-local"
                 value={scheduledAt}
-                onChange={(e) => setScheduledAt(e.target.value)}
+                onChange={(e) => handleStartChange(e.target.value)}
                 className="w-full h-11 pl-10 pr-3.5 rounded-sm border border-slate-200 bg-surface text-[15px] outline-none transition-shadow duration-200 focus:border-brand-500 focus:shadow-focus"
               />
             </div>
           </label>
+
+          {/* L'heure de fin n'a de sens que pour une réunion planifiée : c'est
+              elle qui décide si un départ « quitte » ou « termine » la réunion. */}
+          {scheduledAt && (
+            <label className="block">
+              <span className="block text-[13px] font-medium text-slate-700 mb-1.5">Fin</span>
+              <div className="relative">
+                <Clock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                <input
+                  type="datetime-local"
+                  value={endsAt}
+                  onChange={(e) => { setEndsAt(e.target.value); setError(''); }}
+                  min={scheduledAt}
+                  className="w-full h-11 pl-10 pr-3.5 rounded-sm border border-slate-200 bg-surface text-[15px] outline-none transition-shadow duration-200 focus:border-brand-500 focus:shadow-focus"
+                />
+              </div>
+              <span className="mt-1.5 block text-[12px] text-slate-500">
+                Avant cette heure, quitter la réunion ne la termine pas — les autres peuvent revenir.
+              </span>
+            </label>
+          )}
 
           <div className="flex items-center gap-4 py-1">
             <div className="flex-1">

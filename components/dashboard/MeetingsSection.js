@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { Video, CalendarDays, Link2, Copy, Check, Trash2 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
-import { formatDayBadge, formatTime } from '@/lib/datetime';
+import { formatDayBadge } from '@/lib/datetime';
+import { formatTimeRange } from '@/lib/meetingSchedule';
 import { parseMeetingCode } from '@/lib/meetingCode';
 
 function ActionCard({ icon: Icon, title, text, onClick, tone = 'brand', children }) {
@@ -142,7 +143,7 @@ export default function MeetingsSection({
                       )}
                     </div>
                     <p className="mt-1 text-[13px] text-slate-700">
-                      {meeting.scheduled_at ? formatTime(meeting.scheduled_at, timeZone) : 'Instantanée'}
+                      {formatTimeRange(meeting, timeZone) || 'Instantanée'}
                       {' · '}
                       {people.length} participant{people.length > 1 ? 's' : ''}
                       {' · '}

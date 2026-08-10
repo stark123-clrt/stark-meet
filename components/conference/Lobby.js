@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Video, VideoOff, Copy, Check, Clock, Link2 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
-import { formatDateTime } from '@/lib/datetime';
+import { formatLongDate } from '@/lib/datetime';
+import { formatTimeRange } from '@/lib/meetingSchedule';
 
 /**
  * Écran de préparation, avant d'entrer dans la salle.
@@ -114,7 +115,9 @@ export default function Lobby({
             {meeting?.title || 'Réunion'}
           </h1>
           <p className="mt-2.5 text-[13.5px] leading-relaxed text-slate-700">
-            {meeting?.scheduled_at ? formatDateTime(meeting.scheduled_at, timeZone) : 'Démarrage immédiat'}
+            {meeting?.scheduled_at
+              ? `${formatLongDate(meeting.scheduled_at, timeZone)} · ${formatTimeRange(meeting, timeZone)}`
+              : 'Démarrage immédiat'}
             {invitedCount > 0 && ` · ${invitedCount} participant${invitedCount > 1 ? 's' : ''}`}
           </p>
 

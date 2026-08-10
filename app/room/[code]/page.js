@@ -11,6 +11,7 @@ import EndScreen from '@/components/conference/EndScreen';
 import useRoomChannel from '@/hooks/useRoomChannel';
 import useMediasoup from '@/hooks/useMediasoup';
 import { withDefaults } from '@/lib/preferences';
+import { shouldCompleteMeeting, formatTimeRange } from '@/lib/meetingSchedule';
 
 // Filet de sécurité si le canal temps réel est momentanément indisponible :
 // on resynchronise la liste depuis Supabase de temps en temps. Volontairement
@@ -364,6 +365,11 @@ export default function RoomPage() {
   const handleLeaveMeeting = async () => {
     const durationMs = callStartedAtRef.current ? Date.now() - callStartedAtRef.current : 0;
 
+    // Relevé AVANT de couper le média : `leaveMeeting()` vide `remotePeers`, et
+    // on ne saurait plus si on était la dernière personne dans la salle.
+    const wasLastParticipant = Object.keys(media.remotePeers || {}).length === 0;
+    const closesMeeting = shouldCompleteMeeting(meeting, wasLastParticipant);
+
     // Le nombre de messages est compté en base plutôt que remonté depuis le
     // panneau de discussion : une requête `head` ne transfère aucune ligne, et
     // ça évite de faire traverser l'état du chat à toute l'application.
@@ -381,12 +387,33 @@ export default function RoomPage() {
       durationMs,
       participants: participants.filter((p) => p.status === 'admitted').length,
       messages,
+      // « Ne se termine pas » couvre exactement les trois cas où la réunion
+      // continue : d'autres sont encore là, ou j'étais seul mais l'heure de fin
+      // n'est pas passée. Ajouter une condition d'horaire aurait annoncé « appel
+      // terminé » alors que des gens parlent encore, après l'heure prévue.
+      stillRunning: !closesMeeting,
     });
 
     media.leaveMeeting();
 
     if (myParticipant) {
       await updateParticipant(myParticipant.id, { status: 'left', left_at: new Date().toISOString() });
+    }
+
+    // La dernière personne referme la salle — immédiatement pour une réunion
+    // instantanée, seulement après l'heure de fin pour une planifiée.
+    if (closesMeeting) {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from('meetings')
+        .update({ status: 'completed' })
+        .eq('id', meeting.id);
+
+      if (error) console.error('Clôture de la réunion impossible:', error);
+      else {
+        setMeeting((prev) => (prev ? { ...prev, status: 'completed' } : prev));
+        roomChannel.sendMeetingUpdate({ status: 'completed' });
+      }
     }
 
     setPhase('end');
@@ -498,6 +525,8 @@ export default function RoomPage() {
         meeting={meeting}
         stats={endStats}
         isHost={!!authUser}
+        stillRunning={!!endStats?.stillRunning}
+        endsAtLabel={formatTimeRange(meeting, preferences.timeZone)?.split(' — ')[1] || null}
         onRejoin={handleRejoin}
       />
     );

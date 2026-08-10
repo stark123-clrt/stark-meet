@@ -4,21 +4,29 @@ import { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Hand, Maximize2, Minimize2 } from 'lucide-react';
 import { initialsOf } from '@/lib/identity';
 
-// Palette de dégradés du design (mockup Claude Design) — assignée de façon
-// déterministe par participant (hash du nom) pour varier les tuiles sans
-// backend, comme dans la maquette d'origine.
-const TILE_GRADIENTS = [
-  'linear-gradient(155deg,#3a2a52,#1a1428)',
-  'linear-gradient(155deg,#1f4a45,#122120)',
-  'linear-gradient(155deg,#4a2f1c,#1c1410)',
-  'linear-gradient(155deg,#1c3350,#111a26)',
-  'linear-gradient(155deg,#2a3a52,#141c28)',
-];
-
-function gradientFor(seed) {
-  let hash = 0;
-  for (let i = 0; i < (seed || '').length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  return TILE_GRADIENTS[hash % TILE_GRADIENTS.length];
+/**
+ * Indicateur de niveau audio — les barres d'égaliseur du template.
+ *
+ * Remplace l'anneau vert qui entourait la tuile : celui-ci changeait la
+ * bordure de toute la vignette à chaque « oui » ou toux, ce qui faisait
+ * clignoter la grille entière. Une pastille discrète transmet la même
+ * information sans agiter la mise en page.
+ */
+function AudioBars({ active }) {
+  return (
+    <span className="flex items-end gap-[2px] h-3.5" aria-hidden="true">
+      {[0, 1, 2, 3].map((index) => (
+        <span
+          key={index}
+          className={`w-[2.5px] rounded-full bg-current ${active ? 'animate-audio-bar' : ''}`}
+          style={{
+            height: active ? '100%' : '35%',
+            animationDelay: `${index * 110}ms`,
+          }}
+        />
+      ))}
+    </span>
+  );
 }
 
 /**
@@ -187,39 +195,33 @@ export default function VideoCard({
   // « INTERVENANT ACTIF » n'a de sens que sur une mise en avant unique.
   const fillsContainer = isStage || variant === 'grid';
   const initials = initialsOf(participant?.name);
-  const bg = gradientFor(participant?.id || participant?.name || 'x');
   const isHost = participant?.role === 'host';
   const shortName = (participant?.name || 'Participant').replace(' (vous)', ' · vous');
 
   return (
     <div
       onClick={onSelect}
+      // Fond plat et sombre, comme le template. Les tuiles portaient des
+      // dégradés colorés assignés par hachage du nom, héritage de l'ancien
+      // design : ils entraient en concurrence avec l'image vidéo et faisaient
+      // tache dans une interface claire.
       className={`relative overflow-hidden bg-stage ${
         fillsContainer
           ? 'w-full h-full rounded-xl'
           : 'flex-none w-[132px] sm:w-[176px] aspect-[16/10] rounded-lg cursor-pointer'
       }`}
       style={{
-        background: bg,
-        outline: !isStage ? `2px solid ${isActiveSpeaker ? '#10B981' : 'rgba(255,255,255,0.10)'}` : undefined,
+        outline: !isStage
+          ? `2px solid ${isActiveSpeaker ? '#1A6DFF' : 'rgba(255,255,255,0.10)'}`
+          : undefined,
         outlineOffset: !isStage ? '-2px' : undefined,
       }}
     >
-      {isSpeaking && (
-        <div className="absolute inset-0 z-30 pointer-events-none rounded-[inherit]">
-          <div className="absolute inset-0 rounded-[inherit] border-2 border-success-500 shadow-[0_0_24px_rgba(16,185,129,0.35)]" />
-        </div>
-      )}
-
       {/* Main levée — visible directement sur la tuile, comme sur Zoom ou
-          Teams. L'anneau ambré permet de la repérer d'un coup d'œil dans une
-          grille, sans avoir à ouvrir la liste des participants. */}
+          Teams, pour la repérer sans ouvrir la liste des participants. */}
       {handRaised && (
         <>
           <div className="absolute inset-0 z-30 pointer-events-none rounded-[inherit] border-2 border-warning-500" />
-          {/* Sur la grande vue, le coin haut-gauche est déjà pris par
-              « INTERVENANT ACTIF » : la main y est rendue dans la ligne du nom,
-              plus bas. Sur une vignette, le coin suffit. */}
           {!isStage && (
             <span
               className="absolute z-30 top-1.5 right-1.5 w-6 h-6 rounded-full bg-warning-500 text-white flex items-center justify-center animate-pulse"
@@ -279,6 +281,16 @@ export default function VideoCard({
               Le template place à cet endroit un chronomètre d'enregistrement,
               qui promettrait une capture inexistante. */}
           <div className="absolute inset-x-0 bottom-0 h-20 sm:h-[90px] z-10 pointer-events-none bg-gradient-to-t from-black/60 to-transparent" />
+
+          {/* Niveau audio, en bas à droite comme dans le template. */}
+          <span
+            className={`absolute right-3 bottom-3 sm:right-5 sm:bottom-[18px] z-20 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+              isSpeaking ? 'bg-brand-500 text-white' : 'bg-black/45 text-white/60'
+            }`}
+            title={isSpeaking ? 'Parle en ce moment' : 'Niveau audio'}
+          >
+            <AudioBars active={isSpeaking} />
+          </span>
           <div className="absolute left-3 bottom-2.5 sm:left-5 sm:bottom-[18px] z-20 flex items-center gap-2.5">
             <span className="text-sm sm:text-base font-semibold text-white drop-shadow">{participant?.name || 'Participant'}</span>
             {isHost && (
@@ -313,14 +325,27 @@ export default function VideoCard({
           )}
           {/* Pastille micro affichée en permanence — bleue si ouvert, rouge si
               coupé. N'apparaître qu'en cas de coupure laissait planer un doute :
-              on ne savait pas si l'information était absente ou le micro ouvert. */}
+              on ne savait pas si l'information était absente ou le micro ouvert.
+              Quand la personne parle, la pastille affiche le niveau audio à la
+              place de l'icône — c'est ce qui remplace l'anneau vert, sans faire
+              bouger la bordure de toute la vignette. */}
           <span
-            className={`absolute right-2 bottom-2 z-20 w-6 h-6 rounded-full flex items-center justify-center ${
-              isAudioActive ? 'bg-brand-500 text-white' : 'bg-error-500 text-white'
+            className={`absolute right-2 bottom-2 z-20 w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+              !isAudioActive
+                ? 'bg-error-500 text-white'
+                : isSpeaking
+                  ? 'bg-brand-500 text-white ring-2 ring-brand-500/35'
+                  : 'bg-brand-500 text-white'
             }`}
-            title={isAudioActive ? 'Micro ouvert' : 'Micro coupé'}
+            title={!isAudioActive ? 'Micro coupé' : isSpeaking ? 'Parle en ce moment' : 'Micro ouvert'}
           >
-            {isAudioActive ? <Mic className="h-3 w-3" /> : <MicOff className="h-3 w-3" />}
+            {!isAudioActive ? (
+              <MicOff className="h-3 w-3" />
+            ) : isSpeaking ? (
+              <AudioBars active />
+            ) : (
+              <Mic className="h-3 w-3" />
+            )}
           </span>
         </>
       )}

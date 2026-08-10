@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase';
 import { ensureProfile } from '@/lib/ensureProfile';
 import { withDefaults } from '@/lib/preferences';
 import { generateMeetingCode } from '@/lib/meetingCode';
+import { isPastScheduledEnd } from '@/lib/meetingSchedule';
 import Avatar from '@/components/ui/Avatar';
 import CreateMeetingDialog from '@/components/dashboard/CreateMeetingDialog';
 import MeetingsSection from '@/components/dashboard/MeetingsSection';
@@ -111,11 +112,21 @@ export default function DashboardPage() {
     const done = [];
 
     for (const meeting of meetings) {
-      const scheduled = meeting.scheduled_at ? new Date(meeting.scheduled_at).getTime() : null;
+      if (meeting.status === 'completed' || meeting.status === 'cancelled') {
+        done.push(meeting);
+        continue;
+      }
 
-      if (meeting.status === 'active') live.push(meeting);
-      else if (meeting.status === 'scheduled' && (!scheduled || scheduled >= now)) soon.push(meeting);
-      else done.push(meeting);
+      if (meeting.status === 'active') {
+        live.push(meeting);
+        continue;
+      }
+
+      // Une réunion planifiée reste « à venir » jusqu'à son heure de FIN, pas de
+      // début : une réunion de 11 h à 12 h est encore en cours à 11 h 30, et la
+      // basculer dans l'historique dès 11 h 01 serait absurde.
+      if (isPastScheduledEnd(meeting, now)) done.push(meeting);
+      else soon.push(meeting);
     }
 
     // Les réunions en cours d'abord : c'est là qu'on veut cliquer.
