@@ -15,6 +15,7 @@ Usage :
     python measure.py /audio            (tous les .wav du dossier)
 """
 
+import os
 import resource
 import sys
 import time
@@ -23,11 +24,32 @@ from pathlib import Path
 
 from faster_whisper import WhisperModel
 
-# Réglages du cahier des charges §4.1. Chacun a une raison précise :
-MODEL_SIZE = "base"          # `tiny` dégrade nettement le français
-COMPUTE_TYPE = "int8"        # ÷4 mémoire, exploite AVX2/VNNI
-CPU_THREADS = 2              # au-delà : rendements décroissants et contention
-BEAM_SIZE = 1                # greedy : −40 % CPU pour ~2 % de WER
+# Réglages du cahier des charges §4.1, surchargeables par variable
+# d'environnement : comparer plusieurs combinaisons ne doit pas obliger à
+# reconstruire l'image.
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")       # `tiny` dégrade nettement le français
+COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE", "int8")   # ÷4 mémoire, exploite AVX2/VNNI
+CPU_THREADS = int(os.environ.get("WHISPER_THREADS", "2"))  # au-delà : contention avec mediasoup
+# Le CDC préconisait 1 (greedy) pour économiser 40 % de CPU. Arbitrage retenu :
+# la recherche par faisceau améliore nettement la transcription, et la marge
+# existe pour un usage à 2-3 participants. On échange des locuteurs simultanés
+# — de ~4 à ~3 — contre un transcript plus juste. Le passage à 5 locuteurs
+# redeviendra possible avec une machine dédiée.
+BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "5"))
+
+# Langue forcée. La détection automatique est nécessaire au multilingue, mais
+# la forcer sur une réunion monolingue évite une erreur de détection et gagne
+# un peu de temps.
+LANGUAGE = os.environ.get("WHISPER_LANGUAGE") or None
+
+# Biaise le vocabulaire du modèle. C'est le levier le plus rentable : les noms
+# propres et le jargon métier sont ce que Whisper écorche le plus, et corriger
+# cela ne coûte aucun temps de calcul.
+DEFAULT_PROMPT = (
+    "Réunion Stark Meet. Visioconférence, mediasoup, Supabase, Coolify, "
+    "agent IA, transcription, compte-rendu, développeur, ingénieur logiciel."
+)
+INITIAL_PROMPT = os.environ.get("WHISPER_PROMPT", DEFAULT_PROMPT) or None
 
 # Paramètres de la fenêtre glissante du jalon 3, utilisés ici uniquement pour
 # traduire un RTF en nombre de locuteurs soutenables.
@@ -83,6 +105,10 @@ def main() -> int:
         print("❌ Aucun fichier .wav à traiter.")
         return 1
 
+    print(
+        f"Modèle {MODEL_SIZE} · {COMPUTE_TYPE} · {CPU_THREADS} threads · beam {BEAM_SIZE} · "
+        f"langue {LANGUAGE or 'auto'} · prompt {'oui' if INITIAL_PROMPT else 'non'}"
+    )
     print(f"Chargement du modèle « {MODEL_SIZE} » en {COMPUTE_TYPE}…")
     load_started = time.perf_counter()
     model = WhisperModel(
@@ -106,7 +132,8 @@ def main() -> int:
         segments, info = model.transcribe(
             str(path),
             beam_size=BEAM_SIZE,
-            language=None,                      # détection automatique
+            language=LANGUAGE,                  # None = détection automatique
+            initial_prompt=INITIAL_PROMPT,      # biaise le vocabulaire, sans coût CPU
             condition_on_previous_text=False,   # évite les boucles d'hallucination
             vad_filter=True,                    # garde-fou : Whisper hallucine sur le silence
         )
@@ -144,13 +171,16 @@ def main() -> int:
     # cible de 30 participants du cahier des charges.
     if speakers >= 5:
         print("✅ Les 5 locuteurs du CDC tiennent. Aucune restriction.")
+    elif speakers >= 3:
+        print(f"✅ Cible de 3 locuteurs atteinte ({speakers:.1f}). Plafonner le pool à 3.")
     elif speakers >= 2:
-        print(f"✅ Suffisant pour ton usage : plafonner le pool à {int(speakers)} locuteurs.")
+        print(f"⚠️  {speakers:.1f} locuteurs seulement — en dessous de la cible de 3.")
+        print("   Repli : WHISPER_BEAM=1 remonterait à ~4 au prix de la qualité.")
     elif speakers >= 1:
-        print("⚠️  Un seul locuteur à la fois. Jouable en petit comité, à surveiller.")
+        print("⚠️  Un seul locuteur à la fois. Jouable en tête-à-tête, à surveiller.")
     else:
         print("❌ Whisper ne suit pas le temps réel sur cette machine.")
-        print("   Pistes : modèle `tiny`, fenêtre plus courte, ou machine dédiée.")
+        print("   Pistes : WHISPER_BEAM=1, modèle `tiny`, ou machine dédiée.")
 
     print("\nRappel : ce chiffre ne vaut que s'il a été mesuré PENDANT une réunion.")
     return 0
