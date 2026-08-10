@@ -208,7 +208,7 @@ export default function VideoCard({
       className={`relative overflow-hidden bg-stage ${
         fillsContainer
           ? 'w-full h-full rounded-xl'
-          : 'flex-none w-[132px] sm:w-[176px] aspect-[16/10] rounded-lg cursor-pointer'
+          : 'flex-none w-[104px] sm:w-[148px] lg:w-[176px] aspect-[16/10] rounded-lg cursor-pointer'
       }`}
       style={{
         outline: !isStage
@@ -294,7 +294,7 @@ export default function VideoCard({
           <div className="absolute left-3 bottom-2.5 sm:left-5 sm:bottom-[18px] z-20 flex items-center gap-2.5">
             <span className="text-sm sm:text-base font-semibold text-white drop-shadow">{participant?.name || 'Participant'}</span>
             {isHost && (
-              <span className="font-mono text-[9px] font-bold tracking-wide text-white bg-success-500 rounded px-1.5 py-0.5">HÔTE</span>
+              <span className="font-mono text-[9px] font-bold tracking-overline uppercase text-white bg-brand-500 rounded-xs px-1.5 py-0.5">Hôte</span>
             )}
             {!isAudioActive && (
               <span className="flex items-center justify-center w-6 h-6 rounded-full bg-error-500/25">

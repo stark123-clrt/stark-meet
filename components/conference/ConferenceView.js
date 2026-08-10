@@ -20,9 +20,12 @@ function formatElapsed(seconds) {
 }
 
 /** Bouton circulaire de la barre de contrôle. */
-function Control({ icon: Icon, label, onClick, disabled, active = true, tone = 'neutral' }) {
+function Control({ icon: Icon, label, onClick, disabled, active = true, tone = 'neutral', className = '' }) {
+  // 44 px sur mobile : à 48 px, six boutons plus « Quitter » dépassaient la
+  // largeur d'un téléphone et la barre partait en défilement horizontal — que
+  // rien ne signalait à l'utilisateur.
   const base =
-    'w-12 h-12 rounded-full flex items-center justify-center flex-none transition-colors duration-200 ease-standard disabled:opacity-40 disabled:cursor-not-allowed';
+    'w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center flex-none transition-colors duration-200 ease-standard disabled:opacity-40 disabled:cursor-not-allowed';
 
   // Micro et caméra actifs sont en bleu plein, comme dans le template : ce sont
   // les deux réglages qu'on cherche du regard en permanence, et un fond neutre
@@ -41,7 +44,7 @@ function Control({ icon: Icon, label, onClick, disabled, active = true, tone = '
   };
 
   return (
-    <button onClick={onClick} disabled={disabled} title={label} aria-label={label} className={`${base} ${tones[tone]}`}>
+    <button onClick={onClick} disabled={disabled} title={label} aria-label={label} className={`${base} ${tones[tone]} ${className}`}>
       <Icon className="h-5 w-5" />
     </button>
   );
@@ -149,7 +152,7 @@ export default function ConferenceView({
   const waitingCount = waitingParticipants?.length || 0;
 
   return (
-    <div className="flex flex-col h-screen w-full bg-canvas text-slate-950 overflow-hidden">
+    <div className="flex flex-col h-viewport w-full bg-canvas text-slate-950 overflow-hidden">
       {/* ---- En-tête ---- */}
       <header className="flex-none flex items-center gap-3 sm:gap-5 px-4 sm:px-6 h-[68px] bg-surface border-b border-slate-200">
         <div className="min-w-0 flex-1 sm:flex-none">
@@ -311,7 +314,7 @@ export default function ConferenceView({
           </div>
         </div>
 
-        <div className="flex-1 md:flex-none flex items-center justify-center gap-2 sm:gap-3 overflow-x-auto scrollbar-hide">
+        <div className="flex-1 md:flex-none flex items-center justify-center gap-1.5 sm:gap-3 overflow-x-auto scrollbar-hide">
           <Control
             icon={isMicOn ? Mic : MicOff}
             label={isForceMuted ? "Micro coupé par l'hôte" : 'Micro'}
@@ -337,10 +340,13 @@ export default function ConferenceView({
           />
           {/* L'enregistrement figure dans le template mais n'existe pas encore :
               bouton présent et désactivé, plutôt qu'une action qui échouerait. */}
+          {/* Masqué sur mobile : ce bouton ne fait rien pour l'instant, et il
+              coûtait la largeur qui manquait aux boutons utiles. */}
           <Control
             icon={Circle}
             label="Enregistrement — arrivera avec le plan Équipe"
             tone="record"
+            className="hidden sm:flex"
             disabled
           />
           <Control
@@ -360,7 +366,7 @@ export default function ConferenceView({
             />
           )}
 
-          <span className="w-px h-8 bg-slate-200 mx-1 flex-none" />
+          <span className="w-px h-8 bg-slate-200 mx-0.5 sm:mx-1 flex-none" />
 
           <button
             onClick={handleLeave}

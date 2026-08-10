@@ -31,7 +31,7 @@ function Stat({ icon: Icon, label, value }) {
  */
 export default function EndScreen({ meeting, stats, isHost, stillRunning, endsAtLabel, onRejoin }) {
   return (
-    <div className="min-h-screen bg-canvas flex items-center justify-center p-4 sm:p-8">
+    <div className="min-h-viewport bg-canvas flex items-center justify-center p-4 sm:p-8">
       <div className="w-full max-w-[560px] text-center">
         <span
           className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-6 ${

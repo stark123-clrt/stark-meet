@@ -442,7 +442,7 @@ export default function RoomPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-canvas flex items-center justify-center">
+      <div className="min-h-viewport bg-canvas flex items-center justify-center">
         <p className="font-mono text-[13px] text-slate-500">Connexion à la réunion…</p>
       </div>
     );
@@ -461,7 +461,7 @@ export default function RoomPage() {
   // Un invité doit se nommer avant d'aller plus loin.
   if (needsName) {
     return (
-      <div className="min-h-screen bg-canvas flex items-center justify-center p-4">
+      <div className="min-h-viewport bg-canvas flex items-center justify-center p-4">
         <div className="w-full max-w-[420px] bg-surface border border-slate-200 rounded-lg p-8">
           <h1 className="font-display font-bold text-[22px] tracking-heading">
             Rejoindre « {meeting?.title} »
@@ -578,7 +578,7 @@ export default function RoomPage() {
 /** Message plein écran — réunion introuvable, accès refusé, exclusion. */
 function CenteredNotice({ icon: Icon, title, text }) {
   return (
-    <div className="min-h-screen bg-canvas flex items-center justify-center px-4">
+    <div className="min-h-viewport bg-canvas flex items-center justify-center px-4">
       <div className="max-w-[420px] text-center">
         <span className="w-14 h-14 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center mx-auto mb-6">
           <Icon className="h-6 w-6" />

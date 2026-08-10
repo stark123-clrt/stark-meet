@@ -146,14 +146,22 @@ export default function VideoGrid({
               ÉPINGLÉ · DÉTACHER
             </button>
           ) : (
-            <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-warning-500 bg-warning-50 border border-warning-500/25 rounded-sm px-2.5 py-1">
+            // Bleu et non ambre : un partage d'écran en cours est une
+            // information, pas un avertissement. L'ambre reste réservé à ce qui
+            // demande une action — main levée, salle d'attente, coupure réseau.
+            <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-overline uppercase text-brand-500 bg-brand-50 border border-brand-500/25 rounded-sm px-2.5 py-1">
               <MonitorUp className="h-3 w-3" />
               PARTAGE D&apos;ÉCRAN
             </span>
           )}
         </div>
 
-        <div className="flex-1 min-h-0">
+        {/* En portrait mobile, la scène ne doit pas manger toute la hauteur :
+            au-delà de ~52 %, le bandeau de vignettes et la barre de contrôle
+            passaient sous la ligne de flottaison. Et un écran partagé affiché
+            en entier laisse de larges bandes noires — les plafonner les réduit
+            au lieu de les étirer. */}
+        <div className="flex-1 min-h-0 max-h-[52vh] sm:max-h-none">
           <VideoCard
             key={spotlightTile.tileId}
             variant="stage"

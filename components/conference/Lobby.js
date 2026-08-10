@@ -58,7 +58,7 @@ export default function Lobby({
     }`;
 
   return (
-    <div className="min-h-screen bg-canvas flex items-center justify-center p-4 sm:p-8">
+    <div className="min-h-viewport bg-canvas flex items-center justify-center p-4 sm:p-8">
       <div className="w-full max-w-[1040px] grid lg:grid-cols-[1.35fr_1fr] gap-6 lg:gap-8 items-stretch">
 
         {/* ---- Aperçu caméra ---- */}

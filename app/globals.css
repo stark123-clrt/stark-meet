@@ -68,3 +68,19 @@ body {
     height: 100% !important;
   }
 }
+
+/* Hauteur de la zone RÉELLEMENT visible.
+   `100vh` inclut la barre d'adresse des navigateurs mobiles : la page
+   dépassait sous la ligne de flottaison, l'en-tête de la réunion se retrouvait
+   hors écran et le bandeau de vignettes débordait. `dvh` suit la zone visible
+   et s'ajuste quand la barre se replie. `vh` reste en repli pour les
+   navigateurs sans `dvh`. */
+.h-viewport {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.min-h-viewport {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
