@@ -46,6 +46,12 @@ create table if not exists profiles (
   updated_at timestamptz default now()
 );
 
+-- Préférences de l'utilisateur (réglages appliqués à chaque nouvel appel,
+-- fuseau horaire d'affichage). En JSONB plutôt qu'en colonnes dédiées : ces
+-- réglages évoluent souvent, et un ajout ne doit pas coûter une migration.
+-- Ajouté après coup — cette ligne est sûre à rejouer sur une base en service.
+alter table profiles add column if not exists preferences jsonb not null default '{}'::jsonb;
+
 alter table profiles enable row level security;
 
 create policy "Public can view all profiles" on profiles for select using (true);
