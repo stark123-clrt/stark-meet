@@ -53,6 +53,11 @@ ENV MALLOC_ARENA_MAX=2
 ENV WHISPER_MODEL=small
 ENV WHISPER_COMPUTE=int8
 
+# Langue forcée : la détection automatique coûte 0,6 à 1,9 s PAR PASSE — mesuré
+# sur le VPS — pour redécouvrir chaque fois la même réponse. La vider rétablit
+# la détection, nécessaire seulement en réunion réellement multilingue.
+ENV WHISPER_LANGUAGE=fr
+
 # Le modèle est téléchargé au premier démarrage puis mis en cache. Sans volume
 # monté sur ce chemin, chaque recréation du conteneur le retélécharge (~500 Mio).
 ENV HF_HOME=/models

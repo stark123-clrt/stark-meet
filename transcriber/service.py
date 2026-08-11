@@ -53,8 +53,18 @@ MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE", "int8")
 CPU_THREADS = int(os.environ.get("WHISPER_THREADS", "2"))
 BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "1"))
-LANGUAGE = os.environ.get("WHISPER_LANGUAGE") or None
 POOL_WORKERS = int(os.environ.get("WHISPER_POOL", "2"))
+
+# Langue forcée. Mesuré sur le VPS : la détection automatique coûte 0,6 à 1,9 s
+# PAR PASSE, soit souvent la moitié du temps de calcul, pour redécouvrir à chaque
+# fois la même réponse. Vider cette variable rétablit la détection.
+LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "fr") or None
+
+# Horodatages par mot. Ils obligent le modèle à repasser sur l'audio pour aligner
+# chaque mot, ce qui est cher. Ils servent à savoir de combien avancer l'ancrage
+# après une confirmation ; sans eux, on interpole depuis les bornes du segment,
+# qui sont gratuites. À comparer par la mesure avant de trancher.
+WORD_TIMESTAMPS = os.environ.get("WHISPER_WORD_TIMESTAMPS", "true").lower() == "true"
 
 INITIAL_PROMPT = os.environ.get(
     "WHISPER_PROMPT",
@@ -133,17 +143,34 @@ def _transcribe_window(audio: np.ndarray) -> list[tuple[str, float, float]]:
         beam_size=BEAM_SIZE,
         language=LANGUAGE,
         initial_prompt=INITIAL_PROMPT,
-        condition_on_previous_text=False,  # évite les boucles d'hallucination
-        word_timestamps=True,              # requis par LocalAgreement-2
-        vad_filter=False,                  # le VAD est déjà passé en amont
+        condition_on_previous_text=False,        # évite les boucles d'hallucination
+        word_timestamps=WORD_TIMESTAMPS,
+        vad_filter=False,                        # le VAD est déjà passé en amont
     )
 
     words: list[tuple[str, float, float]] = []
     for segment in segments:
-        for word in segment.words or []:
-            text = word.word.strip()
-            if text:
-                words.append((text, word.start, word.end))
+        if WORD_TIMESTAMPS and segment.words:
+            for word in segment.words:
+                text = word.word.strip()
+                if text:
+                    words.append((text, word.start, word.end))
+            continue
+
+        # Repli sans alignement : on répartit les mots du segment sur sa durée,
+        # au prorata de leur longueur. C'est approximatif, mais l'ancrage n'a
+        # besoin que d'une borne raisonnable — pas d'une précision au mot. Une
+        # coupe un peu trop tôt fait simplement réanalyser un mot de plus.
+        pieces = [piece for piece in segment.text.strip().split() if piece]
+        if not pieces:
+            continue
+        span = max(segment.end - segment.start, 0.01)
+        total = sum(len(piece) for piece in pieces)
+        cursor = segment.start
+        for piece in pieces:
+            share = span * (len(piece) / total)
+            words.append((piece, cursor, cursor + share))
+            cursor += share
     return words
 
 
@@ -539,8 +566,10 @@ async def lifespan(_app: FastAPI):
     )
 
     log.info(
-        "Service prêt · %s %s · %d processus · fenêtre %.1f-%.1fs · cadence %.1fs",
+        "Service prêt · %s %s · %d processus · fenêtre %.1f-%.1fs · cadence %.1fs · "
+        "langue %s · horodatage par mot %s",
         MODEL_SIZE, COMPUTE_TYPE, POOL_WORKERS, MIN_WINDOW_S, MAX_WINDOW_S, CADENCE_S,
+        LANGUAGE or "auto", "oui" if WORD_TIMESTAMPS else "non",
     )
     if not TRANSCRIBER_SECRET:
         log.warning("TRANSCRIBER_SECRET vide — Node refusera tous les renvois")
