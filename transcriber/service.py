@@ -451,10 +451,35 @@ async def _session_loop(session: Session) -> None:
 # ── API HTTP ────────────────────────────────────────────────────────────────
 
 
+def _warmup() -> int:
+    """
+    Tâche vide, dont le seul effet utile est de faire naître le processus — donc
+    d'exécuter l'initialiseur qui charge le modèle.
+
+    La pause force le pool à créer réellement POOL_WORKERS processus : sans
+    elle, le premier finirait avant que le second ne soit demandé, et un seul
+    modèle serait chargé.
+    """
+    time.sleep(1.0)
+    return os.getpid()
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
     global POOL
     POOL = ProcessPoolExecutor(max_workers=POOL_WORKERS, initializer=_init_worker)
+
+    # Préchauffage. ProcessPoolExecutor est paresseux : sans ces tâches, le
+    # modèle ne se chargerait qu'à la première parole, et les 15 à 25 premières
+    # secondes de la réunion seraient perdues à attendre le chargement.
+    loop = asyncio.get_running_loop()
+    started = time.perf_counter()
+    pids = await asyncio.gather(*(loop.run_in_executor(POOL, _warmup) for _ in range(POOL_WORKERS)))
+    log.info(
+        "Préchauffage terminé en %.1f s · processus %s",
+        time.perf_counter() - started, sorted(set(pids)),
+    )
+
     log.info(
         "Service prêt · %s %s · %d processus · fenêtre %.1f-%.1fs · cadence %.1fs",
         MODEL_SIZE, COMPUTE_TYPE, POOL_WORKERS, MIN_WINDOW_S, MAX_WINDOW_S, CADENCE_S,
