@@ -58,8 +58,16 @@ ENV WHISPER_COMPUTE=int8
 ENV HF_HOME=/models
 VOLUME ["/models"]
 
+# Port d'écoute, paramétrable : sur une machine qui héberge plusieurs dizaines
+# de conteneurs, 8000 est souvent déjà pris par un docker-proxy. Le figer ici
+# obligerait à surcharger la commande au lancement, et le Dockerfile ne
+# décrirait plus la réalité.
+ENV TRANSCRIBER_PORT=8000
 EXPOSE 8000
 
+# Forme shell, indispensable pour que $TRANSCRIBER_PORT soit interprété : en
+# forme exec, la variable serait passée littéralement à uvicorn.
+#
 # `--network host` étant utilisé, uvicorn écoute directement sur le port de
-# l'hôte : le pare-feu du VPS doit garder 8000 fermé à l'extérieur.
-CMD ["python", "-u", "-m", "uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8000"]
+# l'hôte : le pare-feu du VPS doit le garder fermé à l'extérieur.
+CMD python -u -m uvicorn service:app --host 0.0.0.0 --port ${TRANSCRIBER_PORT}
