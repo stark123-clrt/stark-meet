@@ -6,7 +6,14 @@ import {
 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
 import useMeetingChat from '@/hooks/useMeetingChat';
+import useTranscript from '@/hooks/useTranscript';
 import ChatPanel from './ChatPanel';
+import TranscriptPanel from './TranscriptPanel';
+
+// La transcription est un module optionnel : côté serveur elle est derrière
+// TRANSCRIPTION_FORK_ENABLED. Ce drapeau permet de ne pas afficher une section
+// vide en production tant que le module n'est pas activé.
+const TRANSCRIPTION_ANNOUNCED = process.env.NEXT_PUBLIC_TRANSCRIPTION_ENABLED === 'true';
 
 /**
  * Vrai quand le panneau est affiché en colonne fixe (point de rupture `lg`),
@@ -83,6 +90,13 @@ export default function SidePanel({
   const isWidePanel = useIsWidePanel();
   const [participantsOpen, setParticipantsOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+
+  const transcript = useTranscript(roomChannel);
+  const transcriptCount = transcript.finals.length;
+  // Section masquée si le module est éteint ET qu'aucun texte n'est arrivé :
+  // annoncer « Transcription » sans jamais rien afficher serait trompeur.
+  const showTranscript = TRANSCRIPTION_ANNOUNCED || transcriptCount > 0 || transcript.partials.length > 0;
 
   // Sur mobile, la liste démarre repliée pour laisser la place à la discussion ;
   // sur grand écran les deux tiennent sans se gêner.
@@ -168,7 +182,9 @@ export default function SidePanel({
         />
 
         {participantsOpen && (
-          <div className={`overflow-y-auto scrollbar-hide px-3 py-3 ${chatOpen ? 'flex-none max-h-[42%]' : 'flex-1 min-h-0'}`}>
+          <div className={`overflow-y-auto scrollbar-hide px-3 py-3 ${
+            chatOpen || transcriptOpen ? 'flex-none max-h-[36%]' : 'flex-1 min-h-0'
+          }`}>
             <ParticipantsList
               waiting={waiting}
               admitted={admitted}
@@ -184,6 +200,33 @@ export default function SidePanel({
               runAction={runAction}
             />
           </div>
+        )}
+
+        {/* ---- Transcription ---- */}
+        {showTranscript && (
+          <>
+            <SectionHeader
+              title="Transcription"
+              count={transcriptCount}
+              open={transcriptOpen}
+              onToggle={() => setTranscriptOpen((v) => !v)}
+              action={
+                transcript.partials.length > 0 ? (
+                  <span className="flex items-center gap-1.5 font-mono text-[9.5px] font-bold tracking-overline uppercase text-brand-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />
+                    En direct
+                  </span>
+                ) : null
+              }
+            />
+            {transcriptOpen && (
+              <TranscriptPanel
+                finals={transcript.finals}
+                partials={transcript.partials}
+                className={chatOpen ? 'flex-none max-h-[34%]' : 'flex-1 min-h-0'}
+              />
+            )}
+          </>
         )}
 
         {/* ---- Discussion ---- */}

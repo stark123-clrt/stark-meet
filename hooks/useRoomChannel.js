@@ -19,6 +19,10 @@ import io from 'socket.io-client';
 
 const MEDIASOUP_SERVER_URL = process.env.NEXT_PUBLIC_MEDIASOUP_URL || 'http://localhost:3001';
 
+// Fenêtre d'affichage du transcript. Le serveur applique la même borne : une
+// réunion de deux heures ne doit pas faire enfler la mémoire du navigateur.
+const TRANSCRIPT_LIMIT = 400;
+
 export default function useRoomChannel({
   meetingId,
   participantId,
@@ -42,6 +46,36 @@ export default function useRoomChannel({
 
   const identityRef = useRef({});
   identityRef.current = { meetingId, participantId, userId, displayName, isHost };
+
+  // ── Transcription ─────────────────────────────────────────────────────────
+  // Le transcript est tenu ici, dans un ref doublé d'un petit émetteur, et non
+  // en état React. Deux raisons :
+  //
+  //  1. Course au démarrage. Le serveur envoie `control:transcript-state` en
+  //     réponse immédiate à `control:join`, donc avant que React n'ait pu
+  //     remonter jusqu'à un composant enfant abonné : un écouteur posé plus
+  //     tard manquerait l'historique. Ici l'écouteur est posé dans le même
+  //     effet que la connexion.
+  //  2. Rendus. Une hypothèse arrive toutes les 2 s par locuteur. En état
+  //     React à ce niveau, chacune redessinerait toute la page réunion,
+  //     tuiles vidéo comprises. Seul le panneau abonné se redessine.
+  const transcriptRef = useRef({ finals: [], partials: [] });
+  const transcriptSubscribers = useRef(new Set());
+  const transcriptSeq = useRef(0);
+
+  const publishTranscript = useCallback((next) => {
+    transcriptRef.current = next;
+    transcriptSubscribers.current.forEach((notify) => notify(next));
+  }, []);
+
+  const withId = useCallback((segment) => ({ ...segment, id: `t${(transcriptSeq.current += 1)}` }), []);
+
+  const subscribeTranscript = useCallback((notify) => {
+    transcriptSubscribers.current.add(notify);
+    return () => transcriptSubscribers.current.delete(notify);
+  }, []);
+
+  const getTranscript = useCallback(() => transcriptRef.current, []);
 
   useEffect(() => {
     if (!meetingId) return;
@@ -75,6 +109,36 @@ export default function useRoomChannel({
     socket.on('control:ejected', (payload) => handlersRef.current.onEjected?.(payload));
     socket.on('force-muted', (payload) => handlersRef.current.onForceMuted?.(payload));
 
+    // Rattrapage à l'arrivée ou après un rechargement de page.
+    socket.on('control:transcript-state', ({ finals, partials }) => {
+      publishTranscript({
+        finals: (finals || []).map(withId),
+        partials: (partials || []).map(withId),
+      });
+    });
+
+    // Texte confirmé par deux passes de Whisper : il ne bougera plus.
+    socket.on('control:transcript-final', ({ segment }) => {
+      const { finals, partials } = transcriptRef.current;
+      publishTranscript({
+        finals: [...finals, withId(segment)].slice(-TRANSCRIPT_LIMIT),
+        // L'hypothèse de ce locuteur vient d'être tranchée : la garder
+        // afficherait le même texte deux fois, en gris et en noir.
+        partials: partials.filter((item) => item.participantId !== segment.participantId),
+      });
+    });
+
+    // Hypothèse : affichée en gris, elle peut encore changer. Une seule par
+    // locuteur, la plus récente.
+    socket.on('control:transcript-partial', ({ segment }) => {
+      const { finals, partials } = transcriptRef.current;
+      const others = partials.filter((item) => item.participantId !== segment.participantId);
+      publishTranscript({
+        finals,
+        partials: segment.text?.trim() ? [...others, withId(segment)] : others,
+      });
+    });
+
     return () => {
       socket.emit('control:leave');
       socket.removeAllListeners();
@@ -82,7 +146,9 @@ export default function useRoomChannel({
       socketRef.current = null;
       setConnected(false);
     };
-  }, [meetingId]);
+    // publishTranscript et withId sont des useCallback à dépendances vides,
+    // donc stables : les lister satisfait la règle sans rouvrir la connexion.
+  }, [meetingId, publishTranscript, withId]);
 
   // Réannoncer son identité quand elle se précise (la ligne participant est
   // créée après l'ouverture de la connexion, et le nom d'un invité est saisi
@@ -135,7 +201,25 @@ export default function useRoomChannel({
   // (le chat s'abonne au canal), et une nouvelle référence à chaque rendu les
   // ferait se désabonner/réabonner en boucle.
   return useMemo(
-    () => ({ connected, sendParticipantUpdate, sendMeetingUpdate, sendChat, sendReaction, subscribe }),
-    [connected, sendParticipantUpdate, sendMeetingUpdate, sendChat, sendReaction, subscribe]
+    () => ({
+      connected,
+      sendParticipantUpdate,
+      sendMeetingUpdate,
+      sendChat,
+      sendReaction,
+      subscribe,
+      subscribeTranscript,
+      getTranscript,
+    }),
+    [
+      connected,
+      sendParticipantUpdate,
+      sendMeetingUpdate,
+      sendChat,
+      sendReaction,
+      subscribe,
+      subscribeTranscript,
+      getTranscript,
+    ]
   );
 }

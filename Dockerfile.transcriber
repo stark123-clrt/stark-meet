@@ -1,27 +1,65 @@
-# JALON 2 — Mesure du RTF de Whisper hors ligne
+# Service de transcription — Whisper local, hors du conteneur mediasoup
 #
-# Image volontairement jetable : elle ne sert qu'à mesurer, pas à tourner en
-# service. Le service de transcription du jalon 3 partira de cette base.
+# La même image sert aux deux usages, parce qu'ils doivent partager exactement
+# les mêmes versions de faster-whisper et CTranslate2 : mesurer le RTF avec une
+# pile différente de celle qui tourne en production ne prouverait rien.
+#
+#   · service (défaut) : docker run … stark-transcriber
+#   · mesure           : docker run … stark-transcriber python -u measure.py /audio
+#
+# Lancement en production (host network : le service reçoit du RTP sur des ports
+# que mediasoup lui indique dynamiquement, un mappage figé ne peut pas suivre) :
+#
+#   docker run -d --name stark-transcriber --restart unless-stopped \
+#     --network host --cpuset-cpus=5-7 --memory=3g \
+#     -e NODE_CALLBACK_URL=https://<domaine-mediasoup> \
+#     -e TRANSCRIBER_SECRET=<le même secret que côté Node> \
+#     stark-transcriber
+#
+# Le `cpuset` est ce qui protège la visio : sans lui, Whisper disputerait ses
+# cœurs à mediasoup et l'audio se dégraderait pendant les transcriptions.
 
 FROM python:3.11-slim
 
-# libgomp1 est requis par CTranslate2 (le runtime de faster-whisper) pour son
-# parallélisme OpenMP. Absent de l'image slim, et son absence ne se manifeste
-# qu'à l'import, par une erreur de bibliothèque partagée peu explicite.
+# ffmpeg décode le RTP Opus en PCM 16 kHz. libgomp1 est requis par CTranslate2
+# (le runtime de faster-whisper) pour son parallélisme OpenMP : absent de
+# l'image slim, et son absence ne se manifeste qu'à l'import, par une erreur de
+# bibliothèque partagée peu explicite.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir faster-whisper
+RUN pip install --no-cache-dir \
+    faster-whisper \
+    "fastapi>=0.110" \
+    "uvicorn[standard]>=0.27" \
+    requests \
+    numpy \
+    onnxruntime
 
 WORKDIR /app
-COPY transcriber/measure.py ./
+COPY transcriber/ ./
 
 # Réglages imposés par le cahier des charges (§4.1, §8.2) :
-#  · 2 threads — au-delà, rendements décroissants et contention avec mediasoup
+#  · 2 threads par processus — au-delà, rendements décroissants et contention
 #  · MALLOC_ARENA_MAX — glibc allouerait sinon une arène par thread, et
 #    l'empreinte mémoire se multiplierait sur une machine sans swap
 ENV OMP_NUM_THREADS=2
 ENV MALLOC_ARENA_MAX=2
 
-ENTRYPOINT ["python", "-u", "measure.py"]
+# Modèle retenu après mesure : `small` en int8 donne RTF 0,399 sur cette
+# machine, pour une qualité proche de `turbo` à quatre fois moins de calcul.
+ENV WHISPER_MODEL=small
+ENV WHISPER_COMPUTE=int8
+
+# Le modèle est téléchargé au premier démarrage puis mis en cache. Sans volume
+# monté sur ce chemin, chaque recréation du conteneur le retélécharge (~500 Mio).
+ENV HF_HOME=/models
+VOLUME ["/models"]
+
+EXPOSE 8000
+
+# `--network host` étant utilisé, uvicorn écoute directement sur le port de
+# l'hôte : le pare-feu du VPS doit garder 8000 fermé à l'extérieur.
+CMD ["python", "-u", "-m", "uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8000"]

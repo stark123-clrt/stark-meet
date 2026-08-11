@@ -57,10 +57,78 @@ app.get('/transcription/stats', (req, res) => {
   // Sans cet en-tête, le navigateur ressert la réponse précédente et on croit
   // lire un état actuel alors qu'on relit celui d'il y a une heure.
   res.set('Cache-Control', 'no-store');
-  res.json({ ...transcriptionFork.getStats(), now: new Date().toISOString() });
+  res.json({
+    ...transcriptionFork.getStats(),
+    callbackConfigured: !!process.env.TRANSCRIBER_SECRET,
+    transcribedMeetings: transcripts.size,
+    confirmedSegments: Array.from(transcripts.values()).reduce((sum, s) => sum + s.finals.length, 0),
+    now: new Date().toISOString(),
+  });
 });
 
 app.use(express.json());
+
+// ============================================
+// TRANSCRIPTION — RETOUR DU SERVICE PYTHON
+// ============================================
+// Le service tourne en `--network host` et ne peut donc pas joindre ce
+// conteneur par son IP de bridge : il repasse par l'URL publique, à travers
+// Traefik. Cette route est donc exposée sur Internet, d'où le secret partagé —
+// sans lui, n'importe qui pourrait injecter du faux texte dans une réunion.
+const TRANSCRIBER_SECRET = process.env.TRANSCRIBER_SECRET || '';
+
+// Historique conservé en mémoire pour qu'un participant qui rejoint en retard,
+// ou qui recharge sa page, retrouve ce qui a déjà été dit. Volontairement non
+// persisté à ce jalon : la table `meeting_transcript_segments` viendra avec le
+// compte-rendu, qui est le seul consommateur ayant besoin de durabilité.
+const transcripts = new Map(); // meetingId -> { finals: [], partials: Map }
+const TRANSCRIPT_HISTORY_LIMIT = 400;
+
+function transcriptStore(meetingId) {
+  if (!transcripts.has(meetingId)) {
+    transcripts.set(meetingId, { finals: [], partials: new Map() });
+  }
+  return transcripts.get(meetingId);
+}
+
+app.post('/internal/transcript', (req, res) => {
+  if (!TRANSCRIBER_SECRET || req.get('X-Transcriber-Secret') !== TRANSCRIBER_SECRET) {
+    return res.status(403).json({ error: 'Secret invalide' });
+  }
+
+  const { meetingId, participantId, displayName, type, text, at } = req.body || {};
+  if (!meetingId || !type || typeof text !== 'string') {
+    return res.status(400).json({ error: 'Paramètres manquants' });
+  }
+
+  const store = transcriptStore(meetingId);
+  const segment = {
+    participantId: participantId || null,
+    displayName: displayName || 'Participant',
+    text,
+    at: at || new Date().toISOString(),
+  };
+
+  if (type === 'final') {
+    if (text.trim()) {
+      store.finals.push(segment);
+      // Une réunion longue ne doit pas faire enfler la mémoire du SFU
+      // indéfiniment : on garde une fenêtre glissante d'affichage.
+      if (store.finals.length > TRANSCRIPT_HISTORY_LIMIT) store.finals.shift();
+    }
+    // L'hypothèse de ce locuteur vient d'être confirmée : elle n'a plus lieu
+    // d'être affichée en gris à côté du texte définitif.
+    store.partials.delete(segment.participantId);
+    io.to(controlRoomName(meetingId)).emit('control:transcript-final', { segment });
+  } else {
+    // Une seule hypothèse par locuteur : seule la plus récente a du sens.
+    if (text.trim()) store.partials.set(segment.participantId, segment);
+    else store.partials.delete(segment.participantId);
+    io.to(controlRoomName(meetingId)).emit('control:transcript-partial', { segment });
+  }
+
+  res.json({ ok: true });
+});
 
 // ============================================
 // CONFIGURATION MEDIASOUP
@@ -197,13 +265,91 @@ async function getOrCreateRoom(meetingId) {
       mediaCodecs: mediasoupConfig.router.mediaCodecs,
     });
 
+    // Détecteur de niveau audio : c'est lui qui décide À QUI vont les places de
+    // transcription. Sans lui, on transcrivait les trois premiers à produire du
+    // son — donc potentiellement trois auditeurs silencieux pendant que ceux qui
+    // parlent restaient dehors.
+    //
+    // ⚠️ `maxEntries` vaut 1 par défaut, ce qui ne remonterait que le plus fort.
+    let audioLevelObserver = null;
+    if (transcriptionFork.ENABLED) {
+      try {
+        audioLevelObserver = await roomRouter.createAudioLevelObserver({
+          maxEntries: transcriptionFork.MAX_SESSIONS,
+          threshold: -55,   // dBov : en dessous, c'est du bruit de fond
+          interval: 400,    // assez court pour ouvrir une place dès les premiers mots
+        });
+        audioLevelObserver.on('volumes', (volumes) => onVolumes(meetingId, volumes));
+      } catch (error) {
+        // Le module de transcription ne doit jamais empêcher une réunion
+        // d'exister : sans détecteur, on retombe sur l'ordre d'arrivée.
+        console.error('🎙️ AudioLevelObserver indisponible:', error.message);
+      }
+    }
+
     rooms.set(meetingId, {
       router: roomRouter,
       peers: new Map(),
+      audioLevelObserver,
     });
   }
 
   return rooms.get(meetingId);
+}
+
+// ============================================
+// ATTRIBUTION DES PLACES DE TRANSCRIPTION
+// ============================================
+// Le nombre de locuteurs transcrits simultanément est plafonné par le CPU
+// disponible (mesure : `small` en int8 tient ~2 locuteurs, 3 avec
+// contre-pression). Ces places vont donc à qui parle, avec hystérésis :
+// ouverture dès le premier mot, fermeture après un vrai silence — sinon on
+// couperait le fork entre deux phrases et on perdrait la moitié des paroles.
+
+const IDLE_CLOSE_MS = 3000;
+const HEARD_FORGET_MS = 60000;
+const lastHeardAt = new Map(); // producerId -> horodatage
+
+function onVolumes(meetingId, volumes) {
+  const room = rooms.get(meetingId);
+  if (!room) return;
+
+  const now = Date.now();
+  for (const { producer } of volumes) {
+    lastHeardAt.set(producer.id, now);
+    if (transcriptionFork.hasFork(producer.id)) continue;
+
+    const peer = Array.from(room.peers.values()).find((p) => p.producers.has(producer.id));
+    if (!peer) continue;
+
+    transcriptionFork
+      .startFork({
+        router: room.router,
+        producerId: producer.id,
+        meetingId,
+        speakerName: peer.userName,
+        participantId: peer.userId,
+      })
+      .catch((err) => console.error('🎙️ Fork non démarré:', err));
+  }
+}
+
+if (transcriptionFork.ENABLED) {
+  // `unref` : ce minuteur ne doit pas à lui seul maintenir le processus en vie.
+  setInterval(() => {
+    const now = Date.now();
+
+    for (const { producerId, speakerName } of transcriptionFork.listForks()) {
+      if (now - (lastHeardAt.get(producerId) || 0) > IDLE_CLOSE_MS) {
+        console.log(`🎙️ Place libérée (silence) · ${speakerName}`);
+        transcriptionFork.stopFork(producerId);
+      }
+    }
+
+    for (const [producerId, heardAt] of lastHeardAt) {
+      if (now - heardAt > HEARD_FORGET_MS) lastHeardAt.delete(producerId);
+    }
+  }, 1000).unref();
 }
 
 // ============================================
@@ -365,19 +511,17 @@ io.on('connection', (socket) => {
         paused: producer.paused,
       });
 
-      // Fork de transcription — désactivé par défaut, et volontairement hors du
-      // chemin critique : jamais attendu, jamais capable de faire échouer la
-      // production. Si le fork casse, la visio continue.
-      if (kind === 'audio' && transcriptionFork.ENABLED) {
-        transcriptionFork
-          .startFork({
-            router: room.router,
-            producerId: producer.id,
-            meetingId: socket.meetingId,
-            speakerName: peer.userName,
-            participantId: peer.userId,
-          })
-          .catch((err) => console.error('🎙️ Fork non démarré:', err));
+      // Transcription — désactivée par défaut, et volontairement hors du chemin
+      // critique : jamais attendue, jamais capable de faire échouer la
+      // production. Si elle casse, la visio continue.
+      //
+      // On n'ouvre PAS de fork ici : on inscrit le producteur au détecteur de
+      // niveau, qui décidera d'ouvrir une place quand cette personne parlera
+      // vraiment.
+      if (kind === 'audio' && room.audioLevelObserver) {
+        room.audioLevelObserver
+          .addProducer({ producerId: producer.id })
+          .catch((err) => console.error('🎙️ Inscription au détecteur impossible:', err.message));
       }
 
       console.log(`🎬 Producer créé: ${producer.id} (${kind}) par ${peer.userName}`);
@@ -604,6 +748,16 @@ io.on('connection', (socket) => {
       // qu'il ait à rafraîchir.
       socket.to(controlRoomName(meetingId)).emit('control:dirty', { reason: 'join', participantId });
 
+      // Rattrapage du transcript : sans cet envoi, arriver en retard ou
+      // recharger la page donnerait un panneau vide jusqu'à la phrase suivante.
+      const store = transcripts.get(meetingId);
+      if (store && (store.finals.length || store.partials.size)) {
+        socket.emit('control:transcript-state', {
+          finals: store.finals,
+          partials: Array.from(store.partials.values()),
+        });
+      }
+
       if (callback) {
         callback({ success: true, forceMuted: isUserForceMuted(meetingId, userId) });
       }
@@ -812,6 +966,7 @@ function cleanupPeer(socket) {
 
     room.router.close();
     rooms.delete(socket.meetingId);
+    transcripts.delete(socket.meetingId);
     console.log('🗑️ Room supprimée:', socket.meetingId);
   }
 }
