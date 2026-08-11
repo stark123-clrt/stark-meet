@@ -73,8 +73,32 @@ def main() -> int:
     # Passe de chauffe, exclue des mesures.
     list(model.transcribe(audio[: SAMPLE_RATE * 2], beam_size=BEAM_SIZE, language=LANGUAGE)[0])
 
+    def run_once(samples: np.ndarray, chunk_length: int | None) -> tuple[float, int]:
+        """Une transcription chronométrée. `chunk_length=None` = défaut (30 s)."""
+        extra = {} if chunk_length is None else {"chunk_length": chunk_length}
+        started = time.perf_counter()
+        segments, _info = model.transcribe(
+            samples,
+            beam_size=BEAM_SIZE,
+            language=LANGUAGE,
+            condition_on_previous_text=False,
+            word_timestamps=True,
+            vad_filter=False,
+            **extra,
+        )
+        collected = list(segments)
+        elapsed = time.perf_counter() - started
+        return elapsed, sum(len(segment.words or []) for segment in collected)
+
+    def median_of(samples: np.ndarray, chunk_length: int | None) -> tuple[float, int]:
+        results = [run_once(samples, chunk_length) for _ in range(REPEATS)]
+        timings = sorted(result[0] for result in results)
+        return timings[len(timings) // 2], results[-1][1]
+
+    # ── Test 1 : le coût dépend-il de la longueur de fenêtre ? ──────────────
+    print("TEST 1 — coût selon la longueur de fenêtre (complètement à 30 s par défaut)\n")
     print(f"{'fenêtre':>9} {'calcul médian':>15} {'mots':>6}   verdict")
-    print("─" * 60)
+    print("─" * 64)
 
     baseline = None
     for window_s in WINDOWS_S:
@@ -83,40 +107,62 @@ def main() -> int:
             print(f"{window_s:>7.1f} s   —  audio trop court, ignoré")
             continue
 
-        samples = audio[:needed]
-        timings = []
-        words = 0
-        for _ in range(REPEATS):
-            started = time.perf_counter()
-            segments, _info = model.transcribe(
-                samples,
-                beam_size=BEAM_SIZE,
-                language=LANGUAGE,
-                condition_on_previous_text=False,
-                word_timestamps=True,
-                vad_filter=False,
-            )
-            collected = list(segments)
-            timings.append(time.perf_counter() - started)
-            words = sum(len(segment.words or []) for segment in collected)
-
-        median = sorted(timings)[len(timings) // 2]
+        median, words = median_of(audio[:needed], None)
         if baseline is None:
             baseline = median
             verdict = "référence"
         else:
-            ratio = median / baseline
             # Si le coût suivait la durée, on attendrait ratio ≈ window/1s.
-            expected = window_s / WINDOWS_S[0]
-            verdict = f"×{ratio:.2f} (proportionnel : ×{expected:.0f})"
+            verdict = f"×{median / baseline:.2f} (proportionnel : ×{window_s / WINDOWS_S[0]:.0f})"
 
         print(f"{window_s:>7.1f} s {median:>13.2f} s {words:>6}   {verdict}")
 
-    print("─" * 60)
+    print("─" * 64)
     print(
-        "Lecture : si les rapports restent très en dessous du « proportionnel »,\n"
-        "l'encodeur domine et raccourcir la fenêtre ne gagne presque rien.\n"
-        "Le levier est alors le modèle et la cadence, pas la découpe."
+        "Lecture : des rapports proches de ×1 confirment que l'encodeur domine\n"
+        "et que raccourcir la fenêtre ne gagne presque rien.\n"
+    )
+
+    # ── Test 2 : peut-on éviter le remplissage jusqu'à 30 s ? ───────────────
+    # C'est LA question qui décide si la transcription en direct est possible
+    # sur cette machine. Si `chunk_length` réduit vraiment le travail de
+    # l'encodeur, le coût d'une passe chute proportionnellement.
+    window_s = 5.0
+    needed = int(window_s * SAMPLE_RATE)
+    if needed > len(audio):
+        print("TEST 2 ignoré — audio plus court que 5 s.")
+        return 0
+
+    samples = audio[:needed]
+    print(f"TEST 2 — fenêtre de {window_s:.0f} s, en faisant varier le remplissage\n")
+    print(f"{'chunk_length':>13} {'calcul médian':>15} {'mots':>6}   verdict")
+    print("─" * 64)
+
+    try:
+        reference, words = median_of(samples, 30)
+    except TypeError:
+        print("  Le paramètre `chunk_length` n'existe pas dans cette version de")
+        print("  faster-whisper — ce levier est indisponible, il faudra passer")
+        print("  par un modèle plus petit. Mettre faster-whisper à jour, ou")
+        print("  choisir `tiny`.")
+        return 0
+
+    print(f"{'30 s (défaut)':>13} {reference:>13.2f} s {words:>6}   référence")
+
+    for chunk_length in (10, 6):
+        try:
+            median, words = median_of(samples, chunk_length)
+        except Exception as error:  # valeur refusée par le modèle
+            print(f"{chunk_length:>11} s   — refusé : {error}")
+            continue
+        gain = reference / median if median else 0
+        print(f"{chunk_length:>11} s {median:>13.2f} s {words:>6}   {gain:.1f}× plus rapide")
+
+    print("─" * 64)
+    print(
+        "Lecture : un gain net (2× ou plus) rend la transcription en direct\n"
+        "jouable avec le modèle actuel. Sinon, il faut descendre en taille de\n"
+        "modèle, et le compromis se joue sur la qualité du français."
     )
     return 0
 

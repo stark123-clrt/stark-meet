@@ -205,6 +205,7 @@ class Session:
     pending_hole: bool = False
     dropped_windows: int = 0
     passes: int = 0
+    last_inference_s: float = 0.0
     started_at: float = field(default_factory=time.time)
 
     @property
@@ -319,6 +320,14 @@ def _read_pcm(session: Session) -> None:
         with session.lock:
             session.buffer.extend(chunk)
             session.pcm_bytes += len(chunk)
+            # Garde-fou côté producteur. La contre-pression de take_window ne
+            # sert à rien si la boucle de transcription est bloquée : le tampon
+            # gonflait alors sans limite (33 s observées pour un plafond de 8).
+            # Ici, la borne tient quoi qu'il arrive en aval.
+            hard_limit = seconds_to_bytes(MAX_WINDOW_S + MAX_LAG_S)
+            if len(session.buffer) > hard_limit:
+                del session.buffer[: len(session.buffer) - hard_limit]
+                session.pending_hole = True
     log.info(
         "Lecture PCM terminée · %s · %.1f s reçues",
         session.speaker_name, session.pcm_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE),
@@ -447,14 +456,28 @@ async def _session_loop(session: Session) -> None:
             session.previous_words = []
             continue
 
+        # Instrumentation délibérée à chaque passe. Sans ces trois durées, un
+        # blocage est indiscernable d'une lenteur : on voit seulement que rien
+        # n'avance, sans savoir si c'est l'attente d'un processus, le VAD ou
+        # l'inférence elle-même.
+        queued_at = time.perf_counter()
         async with semaphore:
+            acquired_at = time.perf_counter()
             try:
                 words = await loop.run_in_executor(POOL, _transcribe_window, samples)
             except Exception as error:
                 log.error("Inférence en échec · %s: %s", session.speaker_name, error)
                 continue
+            done_at = time.perf_counter()
 
         session.passes += 1
+        session.last_inference_s = done_at - acquired_at
+        log.info(
+            "Passe %d · %s · fenêtre %.1fs · attente %.2fs · inférence %.2fs · RTF %.2f · %d mots",
+            session.passes, session.speaker_name, window_seconds,
+            acquired_at - queued_at, session.last_inference_s,
+            session.last_inference_s / max(window_seconds, 0.01), len(words),
+        )
         committed, hypothesis = local_agreement(session.previous_words, words)
 
         if committed:
@@ -622,6 +645,7 @@ async def health() -> dict:
                 "receivedSeconds": round(s.pcm_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE), 1),
                 "rtpPort": s.rtp_port,
                 "passes": s.passes,
+                "lastInferenceS": round(s.last_inference_s, 2),
                 "droppedWindows": s.dropped_windows,
                 "words": len(s.committed_text.split()),
             }
