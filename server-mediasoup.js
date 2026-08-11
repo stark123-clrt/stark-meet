@@ -306,7 +306,12 @@ async function getOrCreateRoom(meetingId) {
 // ouverture dès le premier mot, fermeture après un vrai silence — sinon on
 // couperait le fork entre deux phrases et on perdrait la moitié des paroles.
 
-const IDLE_CLOSE_MS = 3000;
+// 12 s et non 3 : entre deux phrases on se tait couramment plus de trois
+// secondes. Refermer si vite obligeait ffmpeg à redémarrer à chaque reprise, et
+// le début de chaque phrase — le temps d'amorcer le décodage et d'accumuler la
+// fenêtre minimale — était perdu. Une place gardée un peu plus longtemps ne
+// coûte rien : c'est l'inférence qui consomme du CPU, pas le fork au repos.
+const IDLE_CLOSE_MS = Number(process.env.TRANSCRIPTION_IDLE_CLOSE_MS) || 12000;
 const HEARD_FORGET_MS = 60000;
 const lastHeardAt = new Map(); // producerId -> horodatage
 

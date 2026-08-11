@@ -70,10 +70,13 @@ BYTES_PER_SAMPLE = 2  # PCM 16 bits
 MIN_WINDOW_S = float(os.environ.get("MIN_WINDOW_S", "1.5"))
 
 # Longueur maximale de la fenêtre analysée. Au-delà, on force la confirmation
-# de l'hypothèse et on avance l'ancrage. C'est un arbitrage direct :
-# l'allonger améliore le contexte de Whisper et coûte proportionnellement plus
-# de CPU, donc moins de locuteurs simultanés.
-MAX_WINDOW_S = float(os.environ.get("MAX_WINDOW_S", "8.0"))
+# de l'hypothèse et on avance l'ancrage.
+#
+# C'est le réglage qui pèse le plus sur la latence RESSENTIE : le coût d'une
+# passe vaut « longueur × RTF », donc une fenêtre de 8 s faisait attendre plus de
+# trois secondes rien qu'en calcul. À 5 s on perd un peu de contexte sur les
+# phrases longues et on gagne partout ailleurs.
+MAX_WINDOW_S = float(os.environ.get("MAX_WINDOW_S", "5.0"))
 
 CADENCE_S = float(os.environ.get("CADENCE_S", "2.0"))
 
@@ -211,10 +214,14 @@ class Session:
     def buffered_seconds(self) -> float:
         return len(self.buffer) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
 
-    def take_window(self) -> np.ndarray | None:
+    def take_window(self) -> tuple[np.ndarray, float] | None:
         """
         Copie l'audio depuis l'ancrage, sans le retirer : le recouvrement entre
         deux passes est ce qui permet à LocalAgreement-2 de comparer.
+
+        Renvoie aussi la LONGUEUR analysée. Sans elle, on ne saurait pas de
+        combien avancer l'ancrage quand rien n'est confirmé, et vider tout le
+        tampon jetterait les mots arrivés pendant l'inférence.
         """
         with self.lock:
             if len(self.buffer) < seconds_to_bytes(MIN_WINDOW_S):
@@ -233,20 +240,15 @@ class Session:
 
             raw = bytes(self.buffer[: seconds_to_bytes(MAX_WINDOW_S)])
 
-        return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        return samples, len(raw) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
 
     def advance(self, seconds: float) -> None:
-        """Avance l'ancrage : l'audio confirmé n'a plus à être réanalysé."""
+        """Avance l'ancrage : l'audio traité n'a plus à être réanalysé."""
         if seconds <= 0:
             return
         with self.lock:
             del self.buffer[: min(seconds_to_bytes(seconds), len(self.buffer))]
-
-    def reset_anchor(self) -> None:
-        """Repart de zéro (silence de fin de phrase, ou fenêtre saturée)."""
-        with self.lock:
-            self.buffer.clear()
-        self.previous_words = []
 
 
 SESSIONS: dict[str, Session] = {}
@@ -428,15 +430,21 @@ async def _session_loop(session: Session) -> None:
     while not session.stop_flag.is_set():
         await asyncio.sleep(CADENCE_S)
 
-        samples = session.take_window()
-        if samples is None:
+        taken = session.take_window()
+        if taken is None:
             continue
+        samples, window_seconds = taken
 
         if not _has_speech(samples):
             # Silence sur toute la fenêtre : ce qui restait en hypothèse ne sera
             # jamais mieux confirmé, on le fige et on repart d'un ancrage neuf.
+            #
+            # ⚠️ On avance de la longueur ANALYSÉE, on ne vide pas le tampon :
+            # de l'audio a pu arriver pendant qu'on travaillait, et le jeter
+            # ferait disparaître le début de la phrase suivante.
             await _commit(session, session.previous_words)
-            session.reset_anchor()
+            session.advance(window_seconds)
+            session.previous_words = []
             continue
 
         async with semaphore:
@@ -464,9 +472,11 @@ async def _session_loop(session: Session) -> None:
         # Fenêtre saturée sans confirmation : Whisper hésite (bruit, chevauchement
         # de voix). On fige l'hypothèse plutôt que de payer indéfiniment le coût
         # d'une fenêtre maximale, qui pénaliserait tous les autres locuteurs.
+        # Là encore on avance de la longueur analysée, sans vider le tampon.
         if session.buffered_seconds() >= MAX_WINDOW_S:
             await _commit(session, session.previous_words)
-            session.reset_anchor()
+            session.advance(window_seconds)
+            session.previous_words = []
 
     # Départ du locuteur : ce qui restait en hypothèse est la fin de sa phrase.
     await _commit(session, session.previous_words)
