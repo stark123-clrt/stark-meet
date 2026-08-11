@@ -98,6 +98,11 @@ SILENCE_FLUSH_S = float(os.environ.get("SILENCE_FLUSH_S", "0.6"))
 # ancien. Mieux vaut un trou signalé qu'un transcript qui dérive de 30 s.
 MAX_LAG_S = float(os.environ.get("MAX_LAG_S", "3.0"))
 
+# Au-delà, la fenêtre est abandonnée. Généreux par rapport aux ~1,5 s mesurées :
+# ce n'est pas un réglage de performance mais un filet, pour qu'un cas imprévu ne
+# puisse pas figer une session comme observé sur le VPS.
+INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "8.0"))
+
 NODE_CALLBACK = os.environ.get("NODE_CALLBACK_URL", "http://127.0.0.1:3001")
 # En `--network host`, le port 3001 de l'hôte appartient à Traefik : ce défaut
 # ne sert qu'au développement, la vraie valeur est l'URL publique de mediasoup.
@@ -146,6 +151,12 @@ def _transcribe_window(audio: np.ndarray) -> list[tuple[str, float, float]]:
         condition_on_previous_text=False,        # évite les boucles d'hallucination
         word_timestamps=WORD_TIMESTAMPS,
         vad_filter=False,                        # le VAD est déjà passé en amont
+        # ⚠️ Décodage unique, sans repli sur des températures croissantes. Par
+        # défaut, faster-whisper réessaie jusqu'à SIX fois quand il détecte de la
+        # répétition — ce qui arrive systématiquement sur du bruit. Observé sur
+        # le VPS : 36 s de calcul pour 2 s d'audio, et toute la session gelée.
+        # En flux continu, mieux vaut un segment médiocre qu'une passe sans fin.
+        temperature=0.0,
     )
 
     words: list[tuple[str, float, float]] = []
@@ -232,6 +243,7 @@ class Session:
     pending_hole: bool = False
     dropped_windows: int = 0
     passes: int = 0
+    timeouts: int = 0
     last_inference_s: float = 0.0
     started_at: float = field(default_factory=time.time)
 
@@ -491,7 +503,24 @@ async def _session_loop(session: Session) -> None:
         async with semaphore:
             acquired_at = time.perf_counter()
             try:
-                words = await loop.run_in_executor(POOL, _transcribe_window, samples)
+                # Garde-fou de dernier recours. `temperature=0` supprime la cause
+                # connue des passes interminables, mais une session ne doit jamais
+                # pouvoir se figer sur un cas que je n'ai pas prévu : on abandonne
+                # la fenêtre et on continue.
+                words = await asyncio.wait_for(
+                    loop.run_in_executor(POOL, _transcribe_window, samples),
+                    timeout=INFERENCE_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Inférence abandonnée après %.0f s · %s · fenêtre %.1fs",
+                    INFERENCE_TIMEOUT_S, session.speaker_name, window_seconds,
+                )
+                session.timeouts += 1
+                session.pending_hole = True
+                session.advance(window_seconds)
+                session.previous_words = []
+                continue
             except Exception as error:
                 log.error("Inférence en échec · %s: %s", session.speaker_name, error)
                 continue
@@ -675,6 +704,7 @@ async def health() -> dict:
                 "rtpPort": s.rtp_port,
                 "passes": s.passes,
                 "lastInferenceS": round(s.last_inference_s, 2),
+                "timeouts": s.timeouts,
                 "droppedWindows": s.dropped_windows,
                 "words": len(s.committed_text.split()),
             }
