@@ -167,10 +167,15 @@ async function startFork({ router, producerId, meetingId, speakerName, participa
     // mediasoup choisit son port d'émission dans SA plage : le port alloué
     // au-dessus est celui de la destination, pas le sien. Les confondre les
     // mettrait en conflit.
+    // ⚠️ L'adresse d'écoute détermine l'interface d'ÉMISSION. En mode `stream`
+    // la destination est l'hôte (10.x.x.1 vu du bridge Docker) : une socket
+    // liée à 127.0.0.1 ne peut pas l'atteindre, les paquets partent sur le
+    // loopback et disparaissent sans la moindre erreur. En mode `file` ffmpeg
+    // est dans le même conteneur, et le loopback est alors le bon choix.
     transport = await router.createPlainTransport({
       listenInfo: {
         protocol: 'udp',
-        ip: '127.0.0.1',
+        ip: MODE === 'file' ? '127.0.0.1' : '0.0.0.0',
         portRange: { min: TRANSPORT_MIN_PORT, max: TRANSPORT_MAX_PORT },
       },
       rtcpMux: true,

@@ -185,6 +185,7 @@ class Session:
 
     ffmpeg: subprocess.Popen | None = None
     reader: threading.Thread | None = None
+    stderr_reader: threading.Thread | None = None
     task: asyncio.Task | None = None  # référence gardée, sinon le GC peut l'annuler
     sdp_path: str = ""
 
@@ -195,6 +196,9 @@ class Session:
 
     previous_words: list[tuple[str, float, float]] = field(default_factory=list)
     committed_text: str = ""
+    # Cumul, contrairement au tampon qui se vide : c'est la seule mesure qui
+    # répond sans ambiguïté à « le RTP arrive-t-il ? ».
+    pcm_bytes: int = 0
     pending_hole: bool = False
     dropped_windows: int = 0
     passes: int = 0
@@ -254,12 +258,16 @@ _vad_warned = False
 
 
 def _sdp_for(session: Session) -> str:
+    # ⚠️ `c=IN IP4 0.0.0.0` et non 127.0.0.1 : c'est cette ligne qui dit à ffmpeg
+    # sur quelle interface se lier. Sur le loopback, il n'entendrait rien des
+    # paquets que mediasoup envoie à l'adresse de l'hôte sur le bridge Docker —
+    # et il attendrait indéfiniment, sans erreur ni avertissement.
     return "\n".join(
         [
             "v=0",
-            "o=- 0 0 IN IP4 127.0.0.1",
+            "o=- 0 0 IN IP4 0.0.0.0",
             "s=stark-meet-fork",
-            "c=IN IP4 127.0.0.1",
+            "c=IN IP4 0.0.0.0",
             "t=0 0",
             f"m=audio {session.rtp_port} RTP/AVP {session.payload_type}",
             f"a=rtpmap:{session.payload_type} opus/48000/2",
@@ -282,7 +290,7 @@ def _spawn_ffmpeg(session: Session) -> subprocess.Popen:
 
     return subprocess.Popen(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "ffmpeg", "-hide_banner", "-loglevel", "warning",
             "-protocol_whitelist", "file,rtp,udp",
             "-fflags", "+nobuffer", "-flags", "low_delay",
             "-i", session.sdp_path,
@@ -290,7 +298,9 @@ def _spawn_ffmpeg(session: Session) -> subprocess.Popen:
             "-f", "s16le", "-",
         ],
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        # Jeter cette sortie rend le diagnostic impossible : quand aucun paquet
+        # n'arrive, ffmpeg est le seul à savoir pourquoi.
+        stderr=subprocess.PIPE,
         bufsize=0,
     )
 
@@ -306,7 +316,22 @@ def _read_pcm(session: Session) -> None:
             break
         with session.lock:
             session.buffer.extend(chunk)
-    log.info("Lecture PCM terminée · %s", session.speaker_name)
+            session.pcm_bytes += len(chunk)
+    log.info(
+        "Lecture PCM terminée · %s · %.1f s reçues",
+        session.speaker_name, session.pcm_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE),
+    )
+
+
+def _read_stderr(session: Session) -> None:
+    """Relaie les messages de ffmpeg dans les journaux du service."""
+    stream = session.ffmpeg.stderr if session.ffmpeg else None
+    if stream is None:
+        return
+    for raw in stream:
+        line = raw.decode("utf-8", "replace").strip()
+        if line:
+            log.warning("ffmpeg · %s · %s", session.speaker_name, line)
 
 
 def _has_speech(samples: np.ndarray) -> bool:
@@ -544,6 +569,8 @@ async def session_start(request: StartRequest) -> dict:
 
     session.reader = threading.Thread(target=_read_pcm, args=(session,), daemon=True)
     session.reader.start()
+    session.stderr_reader = threading.Thread(target=_read_stderr, args=(session,), daemon=True)
+    session.stderr_reader.start()
 
     SESSIONS[key] = session
     session.task = asyncio.create_task(_session_loop(session))
@@ -582,6 +609,8 @@ async def health() -> dict:
                 "speaker": s.speaker_name,
                 "meetingId": s.meeting_id,
                 "bufferedSeconds": round(s.buffered_seconds(), 1),
+                "receivedSeconds": round(s.pcm_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE), 1),
+                "rtpPort": s.rtp_port,
                 "passes": s.passes,
                 "droppedWindows": s.dropped_windows,
                 "words": len(s.committed_text.split()),
