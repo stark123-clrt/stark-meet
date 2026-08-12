@@ -5,26 +5,28 @@ Reçoit du RTP Opus depuis mediasoup, le convertit en PCM par ffmpeg, transcrit
 avec faster-whisper, et renvoie le texte à Node qui le rediffuse sur
 `ctl:<meetingId>`.
 
-DEUX MÉCANISMES PORTENT TOUTE LA CONCEPTION :
+DEUX PRINCIPES, ARRÊTÉS APRÈS L'ÉCHEC DE LA PREMIÈRE CONCEPTION :
 
-1. LA FENÊTRE ANCRÉE. Whisper n'est pas un modèle de flux : il est entraîné sur
-   des fenêtres de 30 s et infère par blocs. Découper en morceaux indépendants
-   de 500 ms produirait du texte haché et halluciné. On réanalyse donc à chaque
-   cadence tout l'audio depuis un ANCRAGE, qui n'avance que sur ce qui est
-   confirmé.
+1. ON NE JETTE JAMAIS D'AUDIO. La version précédente découpait en fenêtres
+   glissantes et sacrifiait l'audio le plus ancien dès que l'inférence prenait du
+   retard, pour préserver la latence. Résultat mesuré en production : un
+   transcript troué, avec un marqueur « […] » devant presque chaque phrase. Un
+   transcript rapide mais incomplet ne sert à rien. Ici l'audio s'accumule, et
+   c'est le TEXTE qui prend du retard quand la machine ne suit pas.
 
-   ⚠️ L'ancrage est le point à ne pas rater. Une fenêtre glissante classique
-   — « les 4 dernières secondes » — casse le mécanisme 2 : deux passes
-   consécutives n'y partagent aucun début commun, donc rien n'est jamais
-   confirmé et le transcript reste éternellement en hypothèse.
+2. ON DÉCOUPE AUX SILENCES, PAS AU CHRONOMÈTRE. Couper toutes les 5 s tronquait
+   une phrase sur deux (« Pour aujourd'hui, », « Je pense que c'est l'une des
+   choses que »). Le détecteur de voix repère la fin des phrases, et chaque
+   phrase complète part en UNE seule inférence — ce qui donne du texte entier,
+   ponctué, et coûte moins de calcul qu'une réanalyse permanente.
 
-2. LOCALAGREEMENT-2. Comme la fenêtre est réanalysée, le texte change d'une
-   passe à l'autre. On ne fige à l'écran que ce que DEUX passes consécutives
-   confirment — le reste s'affiche en hypothèse, et peut encore bouger.
+La latence devient donc « peu après que tu aies fini ta phrase » plutôt que
+« deux secondes après chaque mot ». C'est le compromis explicitement demandé.
 
-Paramètres arrêtés après mesure sur le VPS (RTF `small` = 0,399 sur 3 cœurs).
-Le coût d'une passe vaut « longueur de fenêtre × RTF » : c'est MAX_WINDOW_S,
-et non la cadence, qui fixe la capacité en locuteurs simultanés.
+Corollaire : LocalAgreement-2 et la fenêtre ancrée ont disparu. Ils servaient à
+réconcilier des passes qui se recouvraient ; ici chaque phrase n'est analysée
+qu'une fois, et son texte est définitif. L'hypothèse affichée en gris reste
+possible, mais comme un supplément facultatif, jamais au prix d'une phrase.
 """
 
 from __future__ import annotations
@@ -56,26 +58,21 @@ BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "1"))
 POOL_WORKERS = int(os.environ.get("WHISPER_POOL", "2"))
 
 # Langue forcée. Mesuré sur le VPS : la détection automatique coûte 0,6 à 1,9 s
-# PAR PASSE, soit souvent la moitié du temps de calcul, pour redécouvrir à chaque
+# PAR PASSE, soit souvent la moitié du temps de calcul, pour redécouvrir chaque
 # fois la même réponse. Vider cette variable rétablit la détection.
 LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "fr") or None
 
-# Horodatages par mot. Ils obligent le modèle à repasser sur l'audio pour aligner
-# chaque mot, ce qui est cher. Ils servent à savoir de combien avancer l'ancrage
-# après une confirmation ; sans eux, on interpole depuis les bornes du segment,
-# qui sont gratuites. À comparer par la mesure avant de trancher.
-WORD_TIMESTAMPS = os.environ.get("WHISPER_WORD_TIMESTAMPS", "true").lower() == "true"
+# Horodatages par mot. Coûteux — ils obligent le modèle à repasser sur l'audio
+# pour aligner chaque mot — et désormais inutiles : on découpe aux silences, donc
+# on connaît déjà les bornes de chaque phrase.
+WORD_TIMESTAMPS = os.environ.get("WHISPER_WORD_TIMESTAMPS", "false").lower() == "true"
 
 # Longueur à laquelle Whisper complète la fenêtre avant de l'encoder. Son défaut
 # est 30 s, et c'est LE poste de dépense : mesuré sur le VPS, une fenêtre de 2 s
 # et une de 5 s coûtent le même temps de calcul, ce qui prouve qu'on paie 30 s
-# dans les deux cas. Réduire ce remplissage à peine plus que la fenêtre réelle
-# divise le travail de l'encodeur d'autant.
-#
-# Contrepartie : le modèle n'a jamais vu d'entrées courtes à l'entraînement, la
-# qualité peut s'en ressentir. À valider par la mesure, d'où la variable.
+# dans les deux cas. Le réduire divise le travail de l'encodeur d'autant.
 # 0 = ne rien passer, donc comportement d'origine.
-CHUNK_LENGTH = int(os.environ.get("WHISPER_CHUNK_LENGTH", "6"))
+CHUNK_LENGTH = int(os.environ.get("WHISPER_CHUNK_LENGTH", "0"))
 
 # Le paramètre n'existe pas dans toutes les versions de faster-whisper. On sonde
 # une fois, puis on s'en souvient au lieu de lever la même exception à chaque
@@ -91,40 +88,42 @@ INITIAL_PROMPT = os.environ.get(
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2  # PCM 16 bits
 
-# Audio minimum avant la première passe. En dessous, Whisper n'a pas assez de
-# contexte et produit surtout du bruit.
-MIN_WINDOW_S = float(os.environ.get("MIN_WINDOW_S", "1.5"))
+# Silence qui marque la fin d'une phrase. Trop court, on coupe au milieu d'une
+# respiration ; trop long, le texte tarde inutilement.
+SILENCE_S = float(os.environ.get("SILENCE_S", "0.7"))
 
-# Longueur maximale de la fenêtre analysée. Au-delà, on force la confirmation
-# de l'hypothèse et on avance l'ancrage.
-#
-# C'est le réglage qui pèse le plus sur la latence RESSENTIE : le coût d'une
-# passe vaut « longueur × RTF », donc une fenêtre de 8 s faisait attendre plus de
-# trois secondes rien qu'en calcul. À 5 s on perd un peu de contexte sur les
-# phrases longues et on gagne partout ailleurs.
-MAX_WINDOW_S = float(os.environ.get("MAX_WINDOW_S", "5.0"))
+# Phrase la plus longue qu'on accepte d'attendre. Au-delà — quelqu'un qui parle
+# sans reprendre son souffle — on coupe quand même, sinon rien ne s'afficherait
+# pendant une minute.
+MAX_UTTERANCE_S = float(os.environ.get("MAX_UTTERANCE_S", "15.0"))
 
-CADENCE_S = float(os.environ.get("CADENCE_S", "2.0"))
+# Phrase la plus courte qu'on envoie au modèle. En dessous, c'est un « oui » ou
+# un bruit de bouche : Whisper y hallucine plus qu'il ne transcrit.
+MIN_UTTERANCE_S = float(os.environ.get("MIN_UTTERANCE_S", "0.4"))
 
-# Silence qui clôt un segment : on confirme alors l'hypothèse et on repart
-# propre. Sans ce vidage, le contexte s'accumule et Whisper se met à halluciner.
-SILENCE_FLUSH_S = float(os.environ.get("SILENCE_FLUSH_S", "0.6"))
+# Rythme d'examen du tampon. Ce n'est plus une cadence d'inférence : on ne
+# calcule que lorsqu'une phrase est prête.
+POLL_S = float(os.environ.get("POLL_S", "0.5"))
 
-# Contre-pression : au-delà de ce retard accumulé, on abandonne l'audio le plus
-# ancien. Mieux vaut un trou signalé qu'un transcript qui dérive de 30 s.
-MAX_LAG_S = float(os.environ.get("MAX_LAG_S", "3.0"))
+# Garde-fou mémoire, très au-delà de tout retard plausible : 5 minutes d'audio
+# ne pèsent que 9,6 Mio. C'est la seule circonstance où de l'audio est perdu, et
+# elle signifie que la machine est hors service.
+BUFFER_MAX_S = float(os.environ.get("BUFFER_MAX_S", "300.0"))
 
-# Au-delà, la fenêtre est abandonnée. Généreux par rapport aux ~1,5 s mesurées :
-# ce n'est pas un réglage de performance mais un filet, pour qu'un cas imprévu ne
-# puisse pas figer une session comme observé sur le VPS.
-INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "8.0"))
+# Retard à partir duquel on cesse d'afficher les hypothèses en gris : elles
+# coûtent une inférence qui doit alors servir aux phrases en attente.
+PARTIAL_MAX_LAG_S = float(os.environ.get("PARTIAL_MAX_LAG_S", "6.0"))
+PARTIALS_ENABLED = os.environ.get("PARTIALS_ENABLED", "true").lower() == "true"
+PARTIAL_MIN_S = float(os.environ.get("PARTIAL_MIN_S", "2.0"))
+
+# Filet : aucune passe ne doit pouvoir figer une session, comme observé sur le
+# VPS (36 s de calcul pour 2 s d'audio).
+INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "20.0"))
 
 # Perte d'audio minimale avant d'écrire « […] » dans le transcript.
 HOLE_MIN_S = float(os.environ.get("HOLE_MIN_S", "1.5"))
 
 NODE_CALLBACK = os.environ.get("NODE_CALLBACK_URL", "http://127.0.0.1:3001")
-# En `--network host`, le port 3001 de l'hôte appartient à Traefik : ce défaut
-# ne sert qu'au développement, la vraie valeur est l'URL publique de mediasoup.
 TRANSCRIBER_SECRET = os.environ.get("TRANSCRIBER_SECRET", "")
 CALLBACK_TIMEOUT_S = 3.0
 
@@ -133,9 +132,13 @@ def seconds_to_bytes(seconds: float) -> int:
     return int(seconds * SAMPLE_RATE) * BYTES_PER_SAMPLE
 
 
+def bytes_to_seconds(count: int) -> float:
+    return count / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+
+
 # ── Pool d'inférence ────────────────────────────────────────────────────────
 # Un modèle par processus, et non par thread : le GIL de Python et CTranslate2
-# ne font pas bon ménage. Deux processus × 750 Mio ≈ 1,5 Gio.
+# ne font pas bon ménage.
 
 _model = None
 
@@ -151,13 +154,8 @@ def _init_worker() -> None:
     log.info("Modèle %s chargé dans le processus %s", MODEL_SIZE, os.getpid())
 
 
-def _transcribe_window(audio: np.ndarray) -> list[tuple[str, float, float]]:
-    """
-    Transcrit une fenêtre. Exécuté dans un processus du pool.
-
-    Renvoie une liste de (mot, début, fin) — au mot et non à la phrase, car
-    LocalAgreement-2 compare mot à mot et l'ancrage avance à la fin d'un mot.
-    """
+def _transcribe(audio: np.ndarray) -> str:
+    """Transcrit une phrase entière. Exécuté dans un processus du pool."""
     global _model, _chunk_length_supported
     if _model is None:  # ceinture : le pool devrait avoir appelé _init_worker
         _init_worker()
@@ -166,17 +164,14 @@ def _transcribe_window(audio: np.ndarray) -> list[tuple[str, float, float]]:
         beam_size=BEAM_SIZE,
         language=LANGUAGE,
         initial_prompt=INITIAL_PROMPT,
-        condition_on_previous_text=False,        # évite les boucles d'hallucination
+        condition_on_previous_text=False,   # évite les boucles d'hallucination
         word_timestamps=WORD_TIMESTAMPS,
-        vad_filter=False,                        # le VAD est déjà passé en amont
-        # Les jetons d'horodatage de segment sont du texte décodé en pure perte
-        # ici : on connaît déjà les bornes de la fenêtre qu'on a fournie.
-        without_timestamps=not WORD_TIMESTAMPS,
+        vad_filter=False,                   # le VAD a déjà découpé en amont
+        without_timestamps=True,
         # ⚠️ Décodage unique, sans repli sur des températures croissantes. Par
         # défaut, faster-whisper réessaie jusqu'à SIX fois quand il détecte de la
         # répétition — ce qui arrive systématiquement sur du bruit. Observé sur
         # le VPS : 36 s de calcul pour 2 s d'audio, et toute la session gelée.
-        # En flux continu, mieux vaut un segment médiocre qu'une passe sans fin.
         temperature=0.0,
     )
 
@@ -184,62 +179,79 @@ def _transcribe_window(audio: np.ndarray) -> list[tuple[str, float, float]]:
         try:
             segments, _info = _model.transcribe(audio, chunk_length=CHUNK_LENGTH, **options)
         except TypeError:
-            # Version de faster-whisper sans ce paramètre : on le note et on ne
-            # réessaiera plus.
             _chunk_length_supported = False
             log.warning("`chunk_length` non pris en charge — remplissage à 30 s conservé")
             segments, _info = _model.transcribe(audio, **options)
     else:
         segments, _info = _model.transcribe(audio, **options)
 
-    words: list[tuple[str, float, float]] = []
-    for segment in segments:
-        if WORD_TIMESTAMPS and segment.words:
-            for word in segment.words:
-                text = word.word.strip()
-                if text:
-                    words.append((text, word.start, word.end))
-            continue
-
-        # Repli sans alignement : on répartit les mots du segment sur sa durée,
-        # au prorata de leur longueur. C'est approximatif, mais l'ancrage n'a
-        # besoin que d'une borne raisonnable — pas d'une précision au mot. Une
-        # coupe un peu trop tôt fait simplement réanalyser un mot de plus.
-        pieces = [piece for piece in segment.text.strip().split() if piece]
-        if not pieces:
-            continue
-        span = max(segment.end - segment.start, 0.01)
-        total = sum(len(piece) for piece in pieces)
-        cursor = segment.start
-        for piece in pieces:
-            share = span * (len(piece) / total)
-            words.append((piece, cursor, cursor + share))
-            cursor += share
-    return words
+    return " ".join(segment.text.strip() for segment in segments).strip()
 
 
-# ── LocalAgreement-2 ────────────────────────────────────────────────────────
+# ── Détection de voix ───────────────────────────────────────────────────────
+
+_vad_warned = False
 
 
-def local_agreement(
-    previous: list[tuple[str, float, float]],
-    current: list[tuple[str, float, float]],
-) -> tuple[list[tuple[str, float, float]], list[tuple[str, float, float]]]:
+def speech_runs(samples: np.ndarray) -> list[tuple[int, int]]:
     """
-    Compare deux passes et renvoie (mots confirmés, hypothèse restante).
+    Plages de parole, en indices d'échantillons, via le VAD Silero embarqué avec
+    faster-whisper.
 
-    Le préfixe commun aux deux passes est considéré comme stable : deux
-    inférences indépendantes qui produisent la même suite de mots se trompent
-    rarement de la même façon.
-
-    Ne fonctionne que parce que les deux passes partent du MÊME ancrage — d'où
-    le mécanisme 1 en tête de fichier.
+    Ce n'est pas qu'une économie de calcul : sans VAD, Whisper hallucine
+    massivement sur le silence (« Sous-titres réalisés par la communauté
+    d'Amara.org » est le cas d'école). C'est aussi et surtout ce qui permet de
+    découper aux frontières de phrases.
     """
-    index = 0
-    limit = min(len(previous), len(current))
-    while index < limit and previous[index][0].lower() == current[index][0].lower():
-        index += 1
-    return current[:index], current[index:]
+    global _vad_warned
+    try:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        stamps = get_speech_timestamps(
+            samples,
+            VadOptions(
+                threshold=0.5,
+                min_silence_duration_ms=int(SILENCE_S * 1000),
+                min_speech_duration_ms=int(MIN_UTTERANCE_S * 1000),
+            ),
+        )
+        return [(int(stamp["start"]), int(stamp["end"])) for stamp in stamps]
+    except Exception as error:
+        # Journalisé une fois : sans cela, un changement de signature dans
+        # faster-whisper ferait basculer silencieusement sur le repli
+        # énergétique, bien moins fiable, sans que personne ne le sache.
+        if not _vad_warned:
+            _vad_warned = True
+            log.warning("VAD Silero indisponible, repli énergétique : %s", error)
+        return _energy_runs(samples)
+
+
+def _energy_runs(samples: np.ndarray) -> list[tuple[int, int]]:
+    """Repli grossier : plages où l'énergie dépasse un seuil, par blocs de 32 ms."""
+    block = SAMPLE_RATE // 31
+    if len(samples) < block:
+        return []
+    count = len(samples) // block
+    energies = np.abs(samples[: count * block].reshape(count, block)).mean(axis=1)
+    loud = energies > 0.008
+
+    runs: list[tuple[int, int]] = []
+    start = None
+    gap_blocks = max(1, int(SILENCE_S * SAMPLE_RATE / block))
+    silent = 0
+    for index, is_loud in enumerate(loud):
+        if is_loud:
+            if start is None:
+                start = index
+            silent = 0
+        elif start is not None:
+            silent += 1
+            if silent >= gap_blocks:
+                runs.append((start * block, (index - silent + 1) * block))
+                start = None
+    if start is not None:
+        runs.append((start * block, count * block))
+    return runs
 
 
 # ── Session ─────────────────────────────────────────────────────────────────
@@ -263,25 +275,19 @@ class Session:
     task: asyncio.Task | None = None  # référence gardée, sinon le GC peut l'annuler
     sdp_path: str = ""
 
-    # Tampon PCM depuis l'ancrage. Ce qui est confirmé en est retiré.
+    # Tampon de travail. Rien n'en sort avant d'avoir été transcrit.
     buffer: bytearray = field(default_factory=bytearray)
     lock: threading.Lock = field(default_factory=threading.Lock)
     stop_flag: threading.Event = field(default_factory=threading.Event)
 
-    previous_words: list[tuple[str, float, float]] = field(default_factory=list)
     committed_text: str = ""
-    # Cumul, contrairement au tampon qui se vide : c'est la seule mesure qui
-    # répond sans ambiguïté à « le RTP arrive-t-il ? ».
     pcm_bytes: int = 0
-    # Audio réellement perdu depuis le dernier marqueur. Compté en secondes et
-    # non par un simple drapeau : les rognages de quelques dixièmes sont normaux
-    # et signaler chacun d'eux collait un « […] » devant presque chaque phrase,
-    # ce qui rendait le marqueur illisible ET faux.
     dropped_seconds: float = 0.0
-    dropped_windows: int = 0
-    passes: int = 0
+    utterances: int = 0
+    partials: int = 0
     timeouts: int = 0
     last_inference_s: float = 0.0
+    last_partial_at: float = 0.0
     started_at: float = field(default_factory=time.time)
 
     @property
@@ -289,40 +295,16 @@ class Session:
         return f"{self.meeting_id}:{self.producer_id}"
 
     def buffered_seconds(self) -> float:
-        return len(self.buffer) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+        return bytes_to_seconds(len(self.buffer))
 
-    def take_window(self) -> tuple[np.ndarray, float] | None:
-        """
-        Copie l'audio depuis l'ancrage, sans le retirer : le recouvrement entre
-        deux passes est ce qui permet à LocalAgreement-2 de comparer.
-
-        Renvoie aussi la LONGUEUR analysée. Sans elle, on ne saurait pas de
-        combien avancer l'ancrage quand rien n'est confirmé, et vider tout le
-        tampon jetterait les mots arrivés pendant l'inférence.
-        """
+    def head(self, seconds: float) -> np.ndarray:
+        """Début du tampon, converti pour le VAD. Ne retire rien."""
         with self.lock:
-            if len(self.buffer) < seconds_to_bytes(MIN_WINDOW_S):
-                return None
-
-            # Contre-pression. Le tampon ne devrait jamais dépasser la fenêtre
-            # maximale : s'il le fait, l'inférence ne suit pas le temps réel et
-            # on sacrifie l'audio le plus ancien pour ne pas dériver sans fin.
-            limit = seconds_to_bytes(MAX_WINDOW_S + MAX_LAG_S)
-            if len(self.buffer) > limit:
-                cut = len(self.buffer) - seconds_to_bytes(MAX_WINDOW_S)
-                del self.buffer[:cut]
-                self.previous_words = []  # l'ancrage a sauté : plus rien n'est comparable
-                self.dropped_windows += 1
-                self.dropped_seconds += cut / (SAMPLE_RATE * BYTES_PER_SAMPLE)
-                log.warning("Retard > %.1f s · audio abandonné · %s", MAX_LAG_S, self.speaker_name)
-
-            raw = bytes(self.buffer[: seconds_to_bytes(MAX_WINDOW_S)])
-
-        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        return samples, len(raw) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+            raw = bytes(self.buffer[: seconds_to_bytes(seconds)])
+        return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
     def advance(self, seconds: float) -> None:
-        """Avance l'ancrage : l'audio traité n'a plus à être réanalysé."""
+        """Retire du tampon l'audio déjà traité."""
         if seconds <= 0:
             return
         with self.lock:
@@ -334,7 +316,6 @@ POOL: ProcessPoolExecutor | None = None
 # Une file par réunion : deux inférences concurrentes sur les mêmes cœurs font
 # exploser la latence des deux.
 ROOM_LOCKS: dict[str, asyncio.Semaphore] = {}
-_vad_warned = False
 
 
 def _sdp_for(session: Session) -> str:
@@ -358,12 +339,7 @@ def _sdp_for(session: Session) -> str:
 
 
 def _spawn_ffmpeg(session: Session) -> subprocess.Popen:
-    """
-    ffmpeg lit le RTP et écrit du PCM 16 kHz mono sur sa sortie standard.
-
-    Jamais de fichier intermédiaire en régime nominal : le disque de cette
-    machine est déjà sollicité par Postgres.
-    """
+    """ffmpeg lit le RTP et écrit du PCM 16 kHz mono sur sa sortie standard."""
     session.sdp_path = f"/tmp/fork-{session.producer_id}.sdp"
     with open(session.sdp_path, "w", encoding="utf-8") as handle:
         handle.write(_sdp_for(session))
@@ -390,6 +366,7 @@ def _read_pcm(session: Session) -> None:
     stream = session.ffmpeg.stdout if session.ffmpeg else None
     if stream is None:
         return
+    hard_limit = seconds_to_bytes(BUFFER_MAX_S)
     while not session.stop_flag.is_set():
         chunk = stream.read(4096)
         if not chunk:
@@ -397,18 +374,20 @@ def _read_pcm(session: Session) -> None:
         with session.lock:
             session.buffer.extend(chunk)
             session.pcm_bytes += len(chunk)
-            # Garde-fou côté producteur. La contre-pression de take_window ne
-            # sert à rien si la boucle de transcription est bloquée : le tampon
-            # gonflait alors sans limite (33 s observées pour un plafond de 8).
-            # Ici, la borne tient quoi qu'il arrive en aval.
-            hard_limit = seconds_to_bytes(MAX_WINDOW_S + MAX_LAG_S)
+            # Seul endroit du service où de l'audio est perdu, et il faut cinq
+            # minutes de retard pour l'atteindre : à ce stade la machine est hors
+            # service, et laisser la mémoire enfler ne ferait qu'aggraver.
             if len(session.buffer) > hard_limit:
                 cut = len(session.buffer) - hard_limit
                 del session.buffer[:cut]
-                session.dropped_seconds += cut / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+                session.dropped_seconds += bytes_to_seconds(cut)
+                log.error(
+                    "Retard de plus de %.0f s · audio abandonné · %s",
+                    BUFFER_MAX_S, session.speaker_name,
+                )
     log.info(
         "Lecture PCM terminée · %s · %.1f s reçues",
-        session.speaker_name, session.pcm_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE),
+        session.speaker_name, bytes_to_seconds(session.pcm_bytes),
     )
 
 
@@ -423,39 +402,13 @@ def _read_stderr(session: Session) -> None:
             log.warning("ffmpeg · %s · %s", session.speaker_name, line)
 
 
-def _has_speech(samples: np.ndarray) -> bool:
-    """
-    VAD Silero, embarqué avec faster-whisper — pas de dépendance de plus.
-
-    Ce n'est pas qu'une économie de calcul : sans lui, Whisper hallucine
-    massivement sur le silence (« Sous-titres réalisés par la communauté
-    d'Amara.org » est le cas d'école).
-    """
-    global _vad_warned
-    try:
-        from faster_whisper.vad import VadOptions, get_speech_timestamps
-
-        stamps = get_speech_timestamps(
-            samples,
-            VadOptions(threshold=0.5, min_silence_duration_ms=int(SILENCE_FLUSH_S * 1000)),
-        )
-        return len(stamps) > 0
-    except Exception as error:
-        # Journalisé une fois : sans cela, un changement de signature dans
-        # faster-whisper ferait basculer silencieusement sur le repli
-        # énergétique, bien moins fiable, sans que personne ne le sache.
-        if not _vad_warned:
-            _vad_warned = True
-            log.warning("VAD Silero indisponible, repli énergétique : %s", error)
-        return bool(np.abs(samples).mean() > 0.001)
+# ── Renvoi vers Node ────────────────────────────────────────────────────────
 
 
 def _post_to_node(path: str, payload: dict) -> None:
     """
-    Renvoi vers Node. Un échec ne doit jamais interrompre la transcription.
-
-    Bloquant : à appeler via asyncio.to_thread, sinon les 3 s de délai
-    d'attente gèleraient la boucle d'événements de TOUTES les sessions.
+    Bloquant : à appeler via asyncio.to_thread, sinon les 3 s de délai d'attente
+    gèleraient la boucle d'événements de TOUTES les sessions.
     """
     try:
         requests.post(
@@ -489,119 +442,161 @@ async def _emit(session: Session, kind: str, text: str) -> None:
     )
 
 
-def _join(words: list[tuple[str, float, float]]) -> str:
-    return " ".join(word for word, _start, _end in words)
+# ── Boucle de session ───────────────────────────────────────────────────────
 
 
-async def _commit(session: Session, words: list[tuple[str, float, float]]) -> None:
-    """Fige des mots à l'écran et les retire de l'audio à réanalyser."""
-    if not words:
+def _next_utterance(session: Session) -> tuple[np.ndarray, float, bool] | None:
+    """
+    Cherche la prochaine phrase à transcrire au début du tampon.
+
+    Renvoie (audio, secondes à retirer du tampon, phrase terminée) ou None.
+
+    « Phrase terminée » signifie qu'un silence d'au moins SILENCE_S a été observé
+    après elle : son texte est définitif. Sinon c'est une phrase en cours, dont
+    on peut afficher une hypothèse sans rien consommer.
+    """
+    # On n'examine que le début du tampon : c'est là que se trouve la prochaine
+    # phrase, et scruter cinq minutes d'audio à chaque tour serait absurde.
+    scan_s = MAX_UTTERANCE_S + SILENCE_S + 1.0
+    samples = session.head(scan_s)
+    if len(samples) < seconds_to_bytes(MIN_UTTERANCE_S) // BYTES_PER_SAMPLE:
+        return None
+
+    runs = speech_runs(samples)
+
+    if not runs:
+        # Rien que du silence en tête. On l'élimine, en gardant une marge pour ne
+        # pas amputer une phrase qui commencerait juste au bord de l'examen.
+        available = len(samples) / SAMPLE_RATE
+        if available > SILENCE_S * 2:
+            session.advance(available - SILENCE_S)
+        return None
+
+    start, end = runs[0]
+    speech_s = (end - start) / SAMPLE_RATE
+    trailing_s = (len(samples) - end) / SAMPLE_RATE
+
+    # Silero fusionne déjà les plages séparées par moins de SILENCE_S, donc un
+    # silence suffisant après la première plage marque bien une fin de phrase.
+    finished = trailing_s >= SILENCE_S or speech_s >= MAX_UTTERANCE_S
+
+    if finished:
+        cut = min(speech_s, MAX_UTTERANCE_S)
+        stop = start + int(cut * SAMPLE_RATE)
+        # On consomme jusqu'à la fin de la parole, pas jusqu'à la fin du silence :
+        # le silence restant sera éliminé au tour suivant, et ne coûte rien.
+        return samples[start:stop], (stop / SAMPLE_RATE), True
+
+    if speech_s >= PARTIAL_MIN_S:
+        return samples[start:end], 0.0, False
+
+    return None
+
+
+async def _run_inference(session: Session, audio: np.ndarray) -> str | None:
+    """Une inférence, bornée dans le temps. None si elle a échoué."""
+    loop = asyncio.get_running_loop()
+    started = time.perf_counter()
+    try:
+        text = await asyncio.wait_for(
+            loop.run_in_executor(POOL, _transcribe, audio),
+            timeout=INFERENCE_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        session.timeouts += 1
+        log.warning(
+            "Inférence abandonnée après %.0f s · %s · %.1f s d'audio",
+            INFERENCE_TIMEOUT_S, session.speaker_name, len(audio) / SAMPLE_RATE,
+        )
+        return None
+    except Exception as error:
+        log.error("Inférence en échec · %s: %s", session.speaker_name, error)
+        return None
+
+    session.last_inference_s = time.perf_counter() - started
+    return text
+
+
+async def _commit(session: Session, text: str) -> None:
+    """Fige une phrase à l'écran."""
+    if not text:
         return
 
-    text = _join(words)
-    # Un trou est signalé seulement s'il est significatif : deux phrases sans
-    # rapport collées bout à bout tromperaient le lecteur et le LLM du
-    # compte-rendu, mais un rognage de quelques dixièmes ne mérite pas un
-    # marqueur — en le signalant systématiquement, on obtenait un « […] » devant
-    # presque chaque phrase, ce qui ne renseignait plus sur rien.
+    # Un trou n'est signalé que s'il est significatif : un rognage de quelques
+    # dixièmes ne mérite pas un marqueur. En les signalant tous, on obtenait un
+    # « […] » devant presque chaque phrase, ce qui ne renseignait plus sur rien.
     if session.dropped_seconds >= HOLE_MIN_S:
         text = "[…] " + text
     session.dropped_seconds = 0.0
 
     session.committed_text = f"{session.committed_text} {text}".strip()
+    session.utterances += 1
     await _emit(session, "final", text)
 
 
 async def _session_loop(session: Session) -> None:
-    """Boucle de transcription d'une session, cadencée à CADENCE_S."""
-    loop = asyncio.get_running_loop()
+    """
+    Boucle d'une session.
+
+    On n'infère que lorsqu'il y a quelque chose à transcrire — une phrase
+    terminée en priorité, une hypothèse seulement s'il reste de la marge.
+    """
     semaphore = ROOM_LOCKS.setdefault(session.meeting_id, asyncio.Semaphore(POOL_WORKERS))
 
     while not session.stop_flag.is_set():
-        await asyncio.sleep(CADENCE_S)
+        await asyncio.sleep(POLL_S)
 
-        taken = session.take_window()
-        if taken is None:
+        # Dans un thread : le VAD analyse jusqu'à une quinzaine de secondes
+        # d'audio deux fois par seconde. Dans la boucle d'événements, ce coût
+        # retarderait toutes les autres sessions.
+        found = await asyncio.to_thread(_next_utterance, session)
+        if found is None:
             continue
-        samples, window_seconds = taken
+        audio, consume_s, finished = found
+        lag = session.buffered_seconds()
 
-        if not _has_speech(samples):
-            # Silence sur toute la fenêtre : ce qui restait en hypothèse ne sera
-            # jamais mieux confirmé, on le fige et on repart d'un ancrage neuf.
-            #
-            # ⚠️ On avance de la longueur ANALYSÉE, on ne vide pas le tampon :
-            # de l'audio a pu arriver pendant qu'on travaillait, et le jeter
-            # ferait disparaître le début de la phrase suivante.
-            await _commit(session, session.previous_words)
-            session.advance(window_seconds)
-            session.previous_words = []
+        if not finished:
+            # Hypothèse : facultative, et la première chose qu'on sacrifie. Elle
+            # coûte une inférence qui doit revenir aux phrases en attente dès que
+            # la machine peine.
+            if not PARTIALS_ENABLED or lag > PARTIAL_MAX_LAG_S:
+                continue
+            if time.time() - session.last_partial_at < max(POLL_S, 1.5):
+                continue
+            session.last_partial_at = time.time()
+            async with semaphore:
+                text = await _run_inference(session, audio)
+            if text:
+                session.partials += 1
+                await _emit(session, "partial", text)
             continue
 
-        # Instrumentation délibérée à chaque passe. Sans ces trois durées, un
-        # blocage est indiscernable d'une lenteur : on voit seulement que rien
-        # n'avance, sans savoir si c'est l'attente d'un processus, le VAD ou
-        # l'inférence elle-même.
-        queued_at = time.perf_counter()
         async with semaphore:
-            acquired_at = time.perf_counter()
-            try:
-                # Garde-fou de dernier recours. `temperature=0` supprime la cause
-                # connue des passes interminables, mais une session ne doit jamais
-                # pouvoir se figer sur un cas que je n'ai pas prévu : on abandonne
-                # la fenêtre et on continue.
-                words = await asyncio.wait_for(
-                    loop.run_in_executor(POOL, _transcribe_window, samples),
-                    timeout=INFERENCE_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                log.warning(
-                    "Inférence abandonnée après %.0f s · %s · fenêtre %.1fs",
-                    INFERENCE_TIMEOUT_S, session.speaker_name, window_seconds,
-                )
-                session.timeouts += 1
-                session.dropped_seconds += window_seconds
-                session.advance(window_seconds)
-                session.previous_words = []
-                continue
-            except Exception as error:
-                log.error("Inférence en échec · %s: %s", session.speaker_name, error)
-                continue
-            done_at = time.perf_counter()
+            text = await _run_inference(session, audio)
 
-        session.passes += 1
-        session.last_inference_s = done_at - acquired_at
-        log.info(
-            "Passe %d · %s · fenêtre %.1fs · attente %.2fs · inférence %.2fs · RTF %.2f · %d mots",
-            session.passes, session.speaker_name, window_seconds,
-            acquired_at - queued_at, session.last_inference_s,
-            session.last_inference_s / max(window_seconds, 0.01), len(words),
-        )
-        committed, hypothesis = local_agreement(session.previous_words, words)
+        # Qu'elle ait réussi ou échoué, la phrase est consommée : la réessayer
+        # indéfiniment bloquerait toutes les suivantes.
+        if text is None:
+            session.dropped_seconds += consume_s
+        session.advance(consume_s)
 
-        if committed:
-            await _commit(session, committed)
-            # L'ancrage avance jusqu'à la fin du dernier mot confirmé, et les
-            # horodatages de l'hypothèse sont recalés sur le nouvel ancrage.
-            cut = committed[-1][2]
-            session.advance(cut)
-            session.previous_words = [
-                (word, start - cut, end - cut) for word, start, end in hypothesis
-            ]
+        if text:
+            log.info(
+                "Phrase %d · %s · %.1f s d'audio · inférence %.2f s · retard %.1f s · %s",
+                session.utterances + 1, session.speaker_name, len(audio) / SAMPLE_RATE,
+                session.last_inference_s, lag, text[:60],
+            )
+            await _commit(session, text)
         else:
-            session.previous_words = words
+            # L'hypothèse affichée ne sera jamais confirmée : on l'efface.
+            await _emit(session, "partial", "")
 
-        # Fenêtre saturée sans confirmation : Whisper hésite (bruit, chevauchement
-        # de voix). On fige l'hypothèse plutôt que de payer indéfiniment le coût
-        # d'une fenêtre maximale, qui pénaliserait tous les autres locuteurs.
-        # Là encore on avance de la longueur analysée, sans vider le tampon.
-        if session.buffered_seconds() >= MAX_WINDOW_S:
-            await _commit(session, session.previous_words)
-            session.advance(window_seconds)
-            session.previous_words = []
-
-    # Départ du locuteur : ce qui restait en hypothèse est la fin de sa phrase.
-    await _commit(session, session.previous_words)
-    session.previous_words = []
+    # Fin de session : ce qui reste dans le tampon est la dernière phrase.
+    remaining = session.head(MAX_UTTERANCE_S)
+    if len(remaining) / SAMPLE_RATE >= MIN_UTTERANCE_S and speech_runs(remaining):
+        text = await _run_inference(session, remaining)
+        if text:
+            await _commit(session, text)
 
 
 # ── API HTTP ────────────────────────────────────────────────────────────────
@@ -612,9 +607,8 @@ def _warmup() -> int:
     Tâche vide, dont le seul effet utile est de faire naître le processus — donc
     d'exécuter l'initialiseur qui charge le modèle.
 
-    La pause force le pool à créer réellement POOL_WORKERS processus : sans
-    elle, le premier finirait avant que le second ne soit demandé, et un seul
-    modèle serait chargé.
+    La pause force le pool à créer réellement POOL_WORKERS processus : sans elle,
+    le premier finirait avant que le second ne soit demandé.
     """
     time.sleep(1.0)
     return os.getpid()
@@ -625,9 +619,8 @@ async def lifespan(_app: FastAPI):
     global POOL
     POOL = ProcessPoolExecutor(max_workers=POOL_WORKERS, initializer=_init_worker)
 
-    # Préchauffage. ProcessPoolExecutor est paresseux : sans ces tâches, le
-    # modèle ne se chargerait qu'à la première parole, et les 15 à 25 premières
-    # secondes de la réunion seraient perdues à attendre le chargement.
+    # Préchauffage : sans ces tâches, le modèle ne se chargerait qu'à la première
+    # parole, et les 15 à 25 premières secondes de la réunion seraient perdues.
     loop = asyncio.get_running_loop()
     started = time.perf_counter()
     pids = await asyncio.gather(*(loop.run_in_executor(POOL, _warmup) for _ in range(POOL_WORKERS)))
@@ -635,17 +628,19 @@ async def lifespan(_app: FastAPI):
         "Préchauffage terminé en %.1f s · processus %s",
         time.perf_counter() - started, sorted(set(pids)),
     )
-
     log.info(
-        "Service prêt · %s %s · %d processus · fenêtre %.1f-%.1fs · cadence %.1fs · "
-        "langue %s · horodatage par mot %s · remplissage %s",
-        MODEL_SIZE, COMPUTE_TYPE, POOL_WORKERS, MIN_WINDOW_S, MAX_WINDOW_S, CADENCE_S,
-        LANGUAGE or "auto", "oui" if WORD_TIMESTAMPS else "non",
+        "Service prêt · %s %s · %d processus · silence %.1fs · phrase max %.0fs · "
+        "langue %s · remplissage %s · hypothèses %s",
+        MODEL_SIZE, COMPUTE_TYPE, POOL_WORKERS, SILENCE_S, MAX_UTTERANCE_S,
+        LANGUAGE or "auto",
         f"{CHUNK_LENGTH}s" if CHUNK_LENGTH > 0 else "30s (défaut)",
+        "oui" if PARTIALS_ENABLED else "non",
     )
     if not TRANSCRIBER_SECRET:
         log.warning("TRANSCRIBER_SECRET vide — Node refusera tous les renvois")
+
     yield
+
     for session in list(SESSIONS.values()):
         _terminate(session)
     if POOL:
@@ -721,7 +716,10 @@ async def session_stop(request: StopRequest) -> dict:
         return {"status": "unknown", "key": key}
 
     _terminate(session)
-    log.info("Session fermée · %s · %d passes", session.speaker_name, session.passes)
+    log.info(
+        "Session fermée · %s · %d phrases · %d hypothèses",
+        session.speaker_name, session.utterances, session.partials,
+    )
     return {"status": "stopped", "key": key, "text": session.committed_text}
 
 
@@ -733,11 +731,11 @@ async def health() -> dict:
         "compute": COMPUTE_TYPE,
         "activeSessions": len(SESSIONS),
         "poolWorkers": POOL_WORKERS,
-        "minWindowS": MIN_WINDOW_S,
-        "maxWindowS": MAX_WINDOW_S,
-        "cadenceS": CADENCE_S,
+        "silenceS": SILENCE_S,
+        "maxUtteranceS": MAX_UTTERANCE_S,
         "chunkLength": CHUNK_LENGTH,
         "wordTimestamps": WORD_TIMESTAMPS,
+        "partials": PARTIALS_ENABLED,
         "language": LANGUAGE or "auto",
         "callbackUrl": NODE_CALLBACK,
         "secretConfigured": bool(TRANSCRIBER_SECRET),
@@ -745,13 +743,15 @@ async def health() -> dict:
             {
                 "speaker": s.speaker_name,
                 "meetingId": s.meeting_id,
-                "bufferedSeconds": round(s.buffered_seconds(), 1),
-                "receivedSeconds": round(s.pcm_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE), 1),
                 "rtpPort": s.rtp_port,
-                "passes": s.passes,
+                "receivedSeconds": round(bytes_to_seconds(s.pcm_bytes), 1),
+                # Retard réel : audio reçu mais pas encore transcrit.
+                "lagSeconds": round(s.buffered_seconds(), 1),
+                "utterances": s.utterances,
+                "partials": s.partials,
                 "lastInferenceS": round(s.last_inference_s, 2),
                 "timeouts": s.timeouts,
-                "droppedWindows": s.dropped_windows,
+                "droppedSeconds": round(s.dropped_seconds, 1),
                 "words": len(s.committed_text.split()),
             }
             for s in SESSIONS.values()
