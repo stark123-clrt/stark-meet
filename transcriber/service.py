@@ -54,7 +54,10 @@ log = logging.getLogger("transcriber")
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE", "int8")
 CPU_THREADS = int(os.environ.get("WHISPER_THREADS", "2"))
-BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "1"))
+# Recherche par faisceau. Le passage de 1 à 5 coûte environ 40 % de calcul en
+# plus et améliore nettement le français — un arbitrage évident ici, puisque la
+# consigne est la complétude et la justesse, pas la latence.
+BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "5"))
 POOL_WORKERS = int(os.environ.get("WHISPER_POOL", "2"))
 
 # Langue forcée. Mesuré sur le VPS : la détection automatique coûte 0,6 à 1,9 s
@@ -85,17 +88,33 @@ INITIAL_PROMPT = os.environ.get(
     "transcription, compte-rendu, développeur, ingénieur logiciel.",
 ) or None
 
+# Contexte glissant : on rappelle au modèle la fin de ce qui vient d'être dit.
+# C'est le levier de qualité le plus rentable — il ne coûte presque rien en
+# calcul et corrige les enchaînements absurdes (« c'est tempestat ») que produit
+# un fragment analysé sans savoir ce qui le précède. Il aide aussi les noms
+# propres, qui se répètent d'une phrase à l'autre.
+#
+# Volontairement court : un contexte long pousse Whisper à se répéter, ce qui est
+# précisément le défaut que `condition_on_previous_text=False` évite par ailleurs.
+# 0 désactive le mécanisme.
+PROMPT_CONTEXT_CHARS = int(os.environ.get("PROMPT_CONTEXT_CHARS", "220"))
+
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2  # PCM 16 bits
 
-# Silence qui marque la fin d'une phrase. Trop court, on coupe au milieu d'une
-# respiration ; trop long, le texte tarde inutilement.
-SILENCE_S = float(os.environ.get("SILENCE_S", "0.7"))
+# Silence qui marque la fin d'une phrase.
+#
+# 1,0 s et non 0,7 : à 0,7 s, une simple hésitation coupait la phrase en deux
+# — « J'espère que… » puis « Que vous serez… » — et chaque moitié partait au
+# modèle sans savoir de quoi parlait l'autre. Attendre un peu plus donne des
+# phrases entières, donc plus de contexte, donc un meilleur texte.
+SILENCE_S = float(os.environ.get("SILENCE_S", "1.0"))
 
 # Phrase la plus longue qu'on accepte d'attendre. Au-delà — quelqu'un qui parle
-# sans reprendre son souffle — on coupe quand même, sinon rien ne s'afficherait
-# pendant une minute.
-MAX_UTTERANCE_S = float(os.environ.get("MAX_UTTERANCE_S", "15.0"))
+# sans reprendre son souffle — on coupe quand même. Généreux, puisque plus de
+# contexte donne une meilleure transcription et que la latence n'est pas le
+# critère retenu.
+MAX_UTTERANCE_S = float(os.environ.get("MAX_UTTERANCE_S", "20.0"))
 
 # Phrase la plus courte qu'on envoie au modèle. En dessous, c'est un « oui » ou
 # un bruit de bouche : Whisper y hallucine plus qu'il ne transcrit.
@@ -104,6 +123,15 @@ MIN_UTTERANCE_S = float(os.environ.get("MIN_UTTERANCE_S", "0.4"))
 # Rythme d'examen du tampon. Ce n'est plus une cadence d'inférence : on ne
 # calcule que lorsqu'une phrase est prête.
 POLL_S = float(os.environ.get("POLL_S", "0.5"))
+
+# Phrases transcrites SIMULTANÉMENT pour un même locuteur.
+#
+# Sans ça, une personne seule n'occupe qu'un processus d'inférence sur deux :
+# la moitié du calcul disponible dort pendant que le retard s'accumule. Les
+# phrases sont extraites du tampon dans l'ordre, lancées en parallèle, puis
+# réordonnées avant affichage — le texte reste donc dans l'ordre où il a été
+# prononcé.
+PARALLEL_UTTERANCES = int(os.environ.get("PARALLEL_UTTERANCES", str(POOL_WORKERS)))
 
 # Garde-fou mémoire, très au-delà de tout retard plausible : une demi-heure
 # d'audio ne pèse que 58 Mio. C'est la seule circonstance où de l'audio est
@@ -121,7 +149,7 @@ PARTIAL_MIN_S = float(os.environ.get("PARTIAL_MIN_S", "2.0"))
 
 # Filet : aucune passe ne doit pouvoir figer une session, comme observé sur le
 # VPS (36 s de calcul pour 2 s d'audio).
-INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "20.0"))
+INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "60.0"))
 
 # Perte d'audio minimale avant d'écrire « […] » dans le transcript.
 HOLE_MIN_S = float(os.environ.get("HOLE_MIN_S", "1.5"))
@@ -157,7 +185,7 @@ def _init_worker() -> None:
     log.info("Modèle %s chargé dans le processus %s", MODEL_SIZE, os.getpid())
 
 
-def _transcribe(audio: np.ndarray) -> str:
+def _transcribe(audio: np.ndarray, prompt: str | None = None) -> str:
     """Transcrit une phrase entière. Exécuté dans un processus du pool."""
     global _model, _chunk_length_supported
     if _model is None:  # ceinture : le pool devrait avoir appelé _init_worker
@@ -166,7 +194,7 @@ def _transcribe(audio: np.ndarray) -> str:
     options = dict(
         beam_size=BEAM_SIZE,
         language=LANGUAGE,
-        initial_prompt=INITIAL_PROMPT,
+        initial_prompt=prompt or INITIAL_PROMPT,
         condition_on_previous_text=False,   # évite les boucles d'hallucination
         word_timestamps=WORD_TIMESTAMPS,
         vad_filter=False,                   # le VAD a déjà découpé en amont
@@ -499,13 +527,35 @@ def _next_utterance(session: Session, final: bool = False) -> tuple[np.ndarray, 
     return None
 
 
+def _prompt_for(session: Session) -> str:
+    """
+    Amorce donnée au modèle : vocabulaire du domaine, nom du locuteur, puis la
+    fin de ce qu'il vient de dire.
+
+    Le nom du locuteur est là pour une raison précise : il est prononcé et
+    réécrit sans cesse en réunion, et c'est exactement ce que Whisper écorche —
+    « Christian Oduho » au lieu de « Christian Ondiyo ». Le lui souffler ne coûte
+    rien.
+    """
+    parts: list[str] = []
+    if INITIAL_PROMPT:
+        parts.append(INITIAL_PROMPT)
+    if session.speaker_name:
+        # En capitales dans l'interface, mais le modèle doit écrire un nom
+        # normalement capitalisé.
+        parts.append(f"{session.speaker_name.title()} prend la parole.")
+    if PROMPT_CONTEXT_CHARS > 0 and session.committed_text:
+        parts.append(session.committed_text[-PROMPT_CONTEXT_CHARS:])
+    return " ".join(parts)
+
+
 async def _run_inference(session: Session, audio: np.ndarray) -> str | None:
     """Une inférence, bornée dans le temps. None si elle a échoué."""
     loop = asyncio.get_running_loop()
     started = time.perf_counter()
     try:
         text = await asyncio.wait_for(
-            loop.run_in_executor(POOL, _transcribe, audio),
+            loop.run_in_executor(POOL, _transcribe, audio, _prompt_for(session)),
             timeout=INFERENCE_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
@@ -540,73 +590,101 @@ async def _commit(session: Session, text: str) -> None:
     await _emit(session, "final", text)
 
 
-async def _session_loop(session: Session) -> None:
+async def _publish_ready(session: Session, inflight: list[asyncio.Task]) -> None:
     """
-    Boucle d'une session.
+    Affiche les phrases terminées, EN ORDRE.
 
-    On n'infère que lorsqu'il y a quelque chose à transcrire — une phrase
-    terminée en priorité, une hypothèse seulement s'il reste de la marge.
+    On ne dépile que par la tête : si la deuxième phrase finit avant la
+    première, elle attend. C'est ce qui permet de calculer en parallèle sans
+    jamais afficher les phrases dans le désordre.
     """
-    semaphore = ROOM_LOCKS.setdefault(session.meeting_id, asyncio.Semaphore(POOL_WORKERS))
-
-    while not session.stop_flag.is_set():
-        await asyncio.sleep(POLL_S)
-
-        # Dans un thread : le VAD analyse jusqu'à une quinzaine de secondes
-        # d'audio deux fois par seconde. Dans la boucle d'événements, ce coût
-        # retarderait toutes les autres sessions.
-        found = await asyncio.to_thread(_next_utterance, session)
-        if found is None:
+    while inflight and inflight[0].done():
+        task = inflight.pop(0)
+        try:
+            text, consume_s, audio_s, lag = await task
+        except Exception as error:  # une tâche ne doit jamais tuer la boucle
+            log.error("Tâche de transcription en échec · %s: %s", session.speaker_name, error)
             continue
-        audio, consume_s, finished = found
-        lag = session.buffered_seconds()
-
-        if not finished:
-            # Hypothèse : facultative, et la première chose qu'on sacrifie. Elle
-            # coûte une inférence qui doit revenir aux phrases en attente dès que
-            # la machine peine.
-            if not PARTIALS_ENABLED or lag > PARTIAL_MAX_LAG_S:
-                continue
-            if time.time() - session.last_partial_at < max(POLL_S, 1.5):
-                continue
-            session.last_partial_at = time.time()
-            async with semaphore:
-                text = await _run_inference(session, audio)
-            if text:
-                session.partials += 1
-                await _emit(session, "partial", text)
-            continue
-
-        async with semaphore:
-            text = await _run_inference(session, audio)
-
-        # Qu'elle ait réussi ou échoué, la phrase est consommée : la réessayer
-        # indéfiniment bloquerait toutes les suivantes.
-        if text is None:
-            session.dropped_seconds += consume_s
-        session.advance(consume_s)
 
         if text:
             log.info(
                 "Phrase %d · %s · %.1f s d'audio · inférence %.2f s · retard %.1f s · %s",
-                session.utterances + 1, session.speaker_name, len(audio) / SAMPLE_RATE,
+                session.utterances + 1, session.speaker_name, audio_s,
                 session.last_inference_s, lag, text[:60],
             )
             await _commit(session, text)
         else:
-            # L'hypothèse affichée ne sera jamais confirmée : on l'efface.
-            await _emit(session, "partial", "")
+            session.dropped_seconds += consume_s
 
-    # Fin de session : on vide le tampon JUSQU'AU BOUT, phrase par phrase.
-    #
-    # C'est le seul moment où un retard accumulé se rattrape. Ne traiter que la
-    # dernière phrase perdrait tout ce qui attendait derrière — soit, en cas de
-    # retard d'une minute, la moitié de ce que la personne a dit.
+
+async def _session_loop(session: Session) -> None:
+    """
+    Boucle d'une session.
+
+    On n'infère que lorsqu'il y a quelque chose à transcrire, et on lance
+    plusieurs phrases de front tant que des processus d'inférence sont libres.
+    """
+    semaphore = ROOM_LOCKS.setdefault(session.meeting_id, asyncio.Semaphore(POOL_WORKERS))
+    inflight: list[asyncio.Task] = []
+
+    async def transcribe(audio, consume_s: float, lag: float):
+        # Le sémaphore borne la concurrence à l'échelle de la RÉUNION : deux
+        # locuteurs lançant chacun deux phrases ne doivent pas se retrouver à
+        # quatre inférences pour deux processus.
+        async with semaphore:
+            text = await _run_inference(session, audio)
+        return text, consume_s, len(audio) / SAMPLE_RATE, lag
+
+    while not session.stop_flag.is_set():
+        await asyncio.sleep(POLL_S)
+
+        # Remplir la file tant qu'il reste de la place et des phrases prêtes.
+        while len(inflight) < PARALLEL_UTTERANCES:
+            # Dans un thread : le VAD analyse jusqu'à une vingtaine de secondes
+            # d'audio deux fois par seconde. Dans la boucle d'événements, ce coût
+            # retarderait toutes les autres sessions.
+            found = await asyncio.to_thread(_next_utterance, session)
+            if found is None:
+                break
+            audio, consume_s, finished = found
+            lag = session.buffered_seconds()
+
+            if not finished:
+                # Hypothèse : facultative, et la première chose qu'on sacrifie.
+                # Elle coûte une inférence qui doit revenir aux phrases en
+                # attente dès que la machine peine.
+                if (
+                    PARTIALS_ENABLED
+                    and not inflight
+                    and lag <= PARTIAL_MAX_LAG_S
+                    and time.time() - session.last_partial_at >= max(POLL_S, 1.5)
+                ):
+                    session.last_partial_at = time.time()
+                    async with semaphore:
+                        text = await _run_inference(session, audio)
+                    if text:
+                        session.partials += 1
+                        await _emit(session, "partial", text)
+                break
+
+            # Consommée dès l'extraction : c'est ce qui permet à l'itération
+            # suivante de voir la phrase d'après et de la lancer en parallèle.
+            session.advance(consume_s)
+            inflight.append(asyncio.create_task(transcribe(audio, consume_s, lag)))
+
+        await _publish_ready(session, inflight)
+
+    # ── Fin de session ──────────────────────────────────────────────────────
+    # On attend les phrases en vol, puis on vide le tampon JUSQU'AU BOUT.
+    # C'est le seul moment où un retard accumulé se rattrape : ne traiter que la
+    # dernière phrase perdrait tout ce qui attendait derrière.
     pending = session.buffered_seconds()
     if pending > MIN_UTTERANCE_S:
-        log.info(
-            "Rattrapage de fin · %s · %.1f s en attente", session.speaker_name, pending
-        )
+        log.info("Rattrapage de fin · %s · %.1f s en attente", session.speaker_name, pending)
+
+    while inflight:
+        await asyncio.wait([inflight[0]])
+        await _publish_ready(session, inflight)
 
     while True:
         found = await asyncio.to_thread(_next_utterance, session, True)
@@ -617,6 +695,8 @@ async def _session_loop(session: Session) -> None:
         text = await _run_inference(session, audio)
         if text:
             await _commit(session, text)
+        else:
+            session.dropped_seconds += consume_s
 
     if pending > MIN_UTTERANCE_S:
         log.info(
@@ -655,11 +735,10 @@ async def lifespan(_app: FastAPI):
         time.perf_counter() - started, sorted(set(pids)),
     )
     log.info(
-        "Service prêt · %s %s · %d processus · silence %.1fs · phrase max %.0fs · "
-        "langue %s · remplissage %s · hypothèses %s",
-        MODEL_SIZE, COMPUTE_TYPE, POOL_WORKERS, SILENCE_S, MAX_UTTERANCE_S,
-        LANGUAGE or "auto",
-        f"{CHUNK_LENGTH}s" if CHUNK_LENGTH > 0 else "30s (défaut)",
+        "Service prêt · %s %s · %d processus · faisceau %d · silence %.1fs · "
+        "phrase max %.0fs · %d en parallèle · langue %s · contexte %d car. · hypothèses %s",
+        MODEL_SIZE, COMPUTE_TYPE, POOL_WORKERS, BEAM_SIZE, SILENCE_S, MAX_UTTERANCE_S,
+        PARALLEL_UTTERANCES, LANGUAGE or "auto", PROMPT_CONTEXT_CHARS,
         "oui" if PARTIALS_ENABLED else "non",
     )
     if not TRANSCRIBER_SECRET:
@@ -757,6 +836,8 @@ async def health() -> dict:
         "compute": COMPUTE_TYPE,
         "activeSessions": len(SESSIONS),
         "poolWorkers": POOL_WORKERS,
+        "parallelUtterances": PARALLEL_UTTERANCES,
+        "beamSize": BEAM_SIZE,
         "silenceS": SILENCE_S,
         "maxUtteranceS": MAX_UTTERANCE_S,
         "chunkLength": CHUNK_LENGTH,
