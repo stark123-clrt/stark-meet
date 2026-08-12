@@ -122,11 +122,21 @@ export default function useRoomChannel({
       });
     });
 
-    // Texte confirmé par deux passes de Whisper : il ne bougera plus.
+    // Phrase confirmée : elle ne bougera plus.
     socket.on('control:transcript-final', ({ segment }) => {
       const { finals, partials } = transcriptRef.current;
+
+      // Insertion à sa place CHRONOLOGIQUE. Deux locuteurs dont les
+      // transcriptions n'avancent pas au même rythme arrivent dans le désordre,
+      // et une réponse s'afficherait alors avant sa question. On remonte depuis
+      // la fin, le cas courant restant l'ajout en queue.
+      const next = [...finals];
+      let index = next.length;
+      while (index > 0 && (next[index - 1].spokenAt ?? 0) > (segment.spokenAt ?? 0)) index -= 1;
+      next.splice(index, 0, withId(segment));
+
       publishTranscript({
-        finals: [...finals, withId(segment)].slice(-TRANSCRIPT_LIMIT),
+        finals: next.slice(-TRANSCRIPT_LIMIT),
         // L'hypothèse de ce locuteur vient d'être tranchée : la garder
         // afficherait le même texte deux fois, en gris et en noir.
         partials: partials.filter((item) => item.participantId !== segment.participantId),

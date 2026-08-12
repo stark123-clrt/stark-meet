@@ -323,6 +323,12 @@ class Session:
 
     committed_text: str = ""
     pcm_bytes: int = 0
+    # Horloge murale du tout premier échantillon reçu, et quantité d'audio déjà
+    # sortie du tampon. Les deux ensemble donnent l'instant où chaque phrase a
+    # été PRONONCÉE — la seule référence qui permette de remettre dans l'ordre
+    # deux locuteurs dont les transcriptions n'avancent pas au même rythme.
+    audio_epoch: float = 0.0
+    consumed_s: float = 0.0
     dropped_seconds: float = 0.0
     utterances: int = 0
     partials: int = 0
@@ -346,11 +352,16 @@ class Session:
         return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
     def advance(self, seconds: float) -> None:
-        """Retire du tampon l'audio déjà traité."""
+        """Retire du tampon l'audio déjà traité, et avance l'horloge du flux."""
         if seconds <= 0:
             return
         with self.lock:
             del self.buffer[: min(seconds_to_bytes(seconds), len(self.buffer))]
+            self.consumed_s += seconds
+
+    def spoken_at(self, offset_s: float) -> float:
+        """Horloge murale d'un point du flux, repéré depuis la tête du tampon."""
+        return (self.audio_epoch or self.started_at) + self.consumed_s + offset_s
 
 
 SESSIONS: dict[str, Session] = {}
@@ -429,6 +440,9 @@ def _read_pcm(session: Session) -> None:
             if not chunk:
                 break
             with session.lock:
+                if session.audio_epoch == 0.0:
+                    # Premier échantillon : c'est l'origine de l'horloge du flux.
+                    session.audio_epoch = time.time()
                 session.buffer.extend(chunk)
                 session.pcm_bytes += len(chunk)
                 # Seul endroit du service où de l'audio est perdu, et il faut une
@@ -438,6 +452,9 @@ def _read_pcm(session: Session) -> None:
                     cut = len(session.buffer) - hard_limit
                     del session.buffer[:cut]
                     session.dropped_seconds += bytes_to_seconds(cut)
+                    # L'audio jeté a bien existé : sans ça, l'horloge du flux
+                    # prendrait du retard sur la réalité pour tout le reste.
+                    session.consumed_s += bytes_to_seconds(cut)
                     log.error(
                         "Retard de plus de %.0f s · audio abandonné · %s",
                         BUFFER_MAX_S, session.speaker_name,
@@ -506,10 +523,11 @@ def _post_to_node(path: str, payload: dict) -> None:
         log.warning("Renvoi vers Node impossible (%s): %s", path, error)
 
 
-async def _emit(session: Session, kind: str, text: str) -> None:
+async def _emit(session: Session, kind: str, text: str, spoken_at: float | None = None) -> None:
     """Envoie un fragment à Node. `kind` vaut 'final' ou 'partial'."""
     if not text:
         return
+    moment = spoken_at if spoken_at else time.time()
     await asyncio.to_thread(
         _post_to_node,
         "/internal/transcript",
@@ -522,7 +540,11 @@ async def _emit(session: Session, kind: str, text: str) -> None:
             "producerId": session.producer_id,
             "type": kind,
             "text": text,
-            "at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z",
+            # Instant de PRONONCIATION, pas de transcription. C'est la clé de tri
+            # qui remet les locuteurs dans l'ordre quand leurs flux n'avancent
+            # pas au même rythme.
+            "spokenAt": round(moment, 3),
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(moment)) + "Z",
         },
     )
 
@@ -530,11 +552,14 @@ async def _emit(session: Session, kind: str, text: str) -> None:
 # ── Boucle de session ───────────────────────────────────────────────────────
 
 
-def _next_utterance(session: Session, final: bool = False) -> tuple[np.ndarray, float, bool] | None:
+def _next_utterance(
+    session: Session, final: bool = False
+) -> tuple[np.ndarray, float, bool, float] | None:
     """
     Cherche la prochaine phrase à transcrire au début du tampon.
 
-    Renvoie (audio, secondes à retirer du tampon, phrase terminée) ou None.
+    Renvoie (audio, secondes à retirer du tampon, phrase terminée, position du
+    début de la parole depuis la tête du tampon) ou None.
 
     « Phrase terminée » signifie qu'un silence d'au moins SILENCE_S a été observé
     après elle : son texte est définitif. Sinon c'est une phrase en cours, dont
@@ -568,15 +593,17 @@ def _next_utterance(session: Session, final: bool = False) -> tuple[np.ndarray, 
     # silence suffisant après la première plage marque bien une fin de phrase.
     finished = final or trailing_s >= SILENCE_S or speech_s >= MAX_UTTERANCE_S
 
+    start_s = start / SAMPLE_RATE
+
     if finished:
         cut = min(speech_s, MAX_UTTERANCE_S)
         stop = start + int(cut * SAMPLE_RATE)
         # On consomme jusqu'à la fin de la parole, pas jusqu'à la fin du silence :
         # le silence restant sera éliminé au tour suivant, et ne coûte rien.
-        return samples[start:stop], (stop / SAMPLE_RATE), True
+        return samples[start:stop], (stop / SAMPLE_RATE), True, start_s
 
     if speech_s >= PARTIAL_MIN_S:
-        return samples[start:end], 0.0, False
+        return samples[start:end], 0.0, False, start_s
 
     return None
 
@@ -627,7 +654,7 @@ async def _run_inference(session: Session, audio: np.ndarray) -> str | None:
     return text
 
 
-async def _commit(session: Session, text: str) -> None:
+async def _commit(session: Session, text: str, spoken_at: float | None = None) -> None:
     """Fige une phrase à l'écran."""
     if not text:
         return
@@ -641,7 +668,7 @@ async def _commit(session: Session, text: str) -> None:
 
     session.committed_text = f"{session.committed_text} {text}".strip()
     session.utterances += 1
-    await _emit(session, "final", text)
+    await _emit(session, "final", text, spoken_at)
 
 
 async def _publish_ready(session: Session, inflight: list[asyncio.Task]) -> None:
@@ -655,7 +682,7 @@ async def _publish_ready(session: Session, inflight: list[asyncio.Task]) -> None
     while inflight and inflight[0].done():
         task = inflight.pop(0)
         try:
-            text, consume_s, audio_s, lag = await task
+            text, consume_s, audio_s, lag, spoken_at = await task
         except Exception as error:  # une tâche ne doit jamais tuer la boucle
             log.error("Tâche de transcription en échec · %s: %s", session.speaker_name, error)
             continue
@@ -666,7 +693,7 @@ async def _publish_ready(session: Session, inflight: list[asyncio.Task]) -> None
                 session.utterances + 1, session.speaker_name, audio_s,
                 session.last_inference_s, lag, text[:60],
             )
-            await _commit(session, text)
+            await _commit(session, text, spoken_at)
         else:
             session.dropped_seconds += consume_s
 
@@ -683,14 +710,14 @@ async def _session_loop(session: Session) -> None:
     )
     inflight: list[asyncio.Task] = []
 
-    async def transcribe(audio, consume_s: float, lag: float):
+    async def transcribe(audio, consume_s: float, lag: float, spoken_at: float):
         # Le sémaphore borne la file à l'échelle de la RÉUNION. Le vrai plafond
         # de calcul reste le pool de processus, qui met en attente ce qu'il ne
         # peut pas traiter — ici on empêche seulement une réunion entière de
         # remplir la file sans limite.
         async with semaphore:
             text = await _run_inference(session, audio)
-        return text, consume_s, len(audio) / SAMPLE_RATE, lag
+        return text, consume_s, len(audio) / SAMPLE_RATE, lag, spoken_at
 
     while not session.stop_flag.is_set():
         await asyncio.sleep(POLL_S)
@@ -703,8 +730,10 @@ async def _session_loop(session: Session) -> None:
             found = await asyncio.to_thread(_next_utterance, session)
             if found is None:
                 break
-            audio, consume_s, finished = found
+            audio, consume_s, finished, start_s = found
             lag = session.buffered_seconds()
+            # Calculé AVANT `advance`, qui déplace l'horloge du flux.
+            spoken_at = session.spoken_at(start_s)
 
             if not finished:
                 # Hypothèse : facultative, et la première chose qu'on sacrifie.
@@ -721,13 +750,13 @@ async def _session_loop(session: Session) -> None:
                         text = await _run_inference(session, audio)
                     if text:
                         session.partials += 1
-                        await _emit(session, "partial", text)
+                        await _emit(session, "partial", text, spoken_at)
                 break
 
             # Consommée dès l'extraction : c'est ce qui permet à l'itération
             # suivante de voir la phrase d'après et de la lancer en parallèle.
             session.advance(consume_s)
-            inflight.append(asyncio.create_task(transcribe(audio, consume_s, lag)))
+            inflight.append(asyncio.create_task(transcribe(audio, consume_s, lag, spoken_at)))
 
         await _publish_ready(session, inflight)
 
@@ -747,11 +776,12 @@ async def _session_loop(session: Session) -> None:
         found = await asyncio.to_thread(_next_utterance, session, True)
         if found is None:
             break
-        audio, consume_s, _finished = found
+        audio, consume_s, _finished, start_s = found
+        spoken_at = session.spoken_at(start_s)
         session.advance(consume_s)
         text = await _run_inference(session, audio)
         if text:
-            await _commit(session, text)
+            await _commit(session, text, spoken_at)
         else:
             session.dropped_seconds += consume_s
 

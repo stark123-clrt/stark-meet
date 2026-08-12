@@ -103,7 +103,7 @@ app.post('/internal/transcript', (req, res) => {
     return res.status(403).json({ error: 'Secret invalide' });
   }
 
-  const { meetingId, participantId, displayName, type, text, at } = req.body || {};
+  const { meetingId, participantId, displayName, type, text, at, spokenAt } = req.body || {};
   if (!meetingId || !type || typeof text !== 'string') {
     return res.status(400).json({ error: 'Paramètres manquants' });
   }
@@ -114,11 +114,20 @@ app.post('/internal/transcript', (req, res) => {
     displayName: displayName || 'Participant',
     text,
     at: at || new Date().toISOString(),
+    // Instant de PRONONCIATION, fourni par le transcripteur. Sans lui, l'ordre
+    // d'affichage serait celui de l'arrivée : deux locuteurs dont les flux
+    // n'avancent pas au même rythme verraient une réponse s'afficher avant sa
+    // question. Repli sur l'heure courante si le transcripteur est ancien.
+    spokenAt: typeof spokenAt === 'number' ? spokenAt : Date.now() / 1000,
   };
 
   if (type === 'final') {
     if (text.trim()) {
-      store.finals.push(segment);
+      // Inséré à sa place chronologique, pas en fin de liste. La recherche part
+      // de la fin parce que le cas courant reste l'ajout en queue.
+      let index = store.finals.length;
+      while (index > 0 && store.finals[index - 1].spokenAt > segment.spokenAt) index -= 1;
+      store.finals.splice(index, 0, segment);
       // Une réunion longue ne doit pas faire enfler la mémoire du SFU
       // indéfiniment : on garde une fenêtre glissante d'affichage.
       if (store.finals.length > TRANSCRIPT_HISTORY_LIMIT) store.finals.shift();
