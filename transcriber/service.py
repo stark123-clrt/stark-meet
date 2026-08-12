@@ -105,15 +105,18 @@ MIN_UTTERANCE_S = float(os.environ.get("MIN_UTTERANCE_S", "0.4"))
 # calcule que lorsqu'une phrase est prête.
 POLL_S = float(os.environ.get("POLL_S", "0.5"))
 
-# Garde-fou mémoire, très au-delà de tout retard plausible : 5 minutes d'audio
-# ne pèsent que 9,6 Mio. C'est la seule circonstance où de l'audio est perdu, et
-# elle signifie que la machine est hors service.
-BUFFER_MAX_S = float(os.environ.get("BUFFER_MAX_S", "300.0"))
+# Garde-fou mémoire, très au-delà de tout retard plausible : une demi-heure
+# d'audio ne pèse que 58 Mio. C'est la seule circonstance où de l'audio est
+# perdu, et à ce stade la machine est hors service. Volontairement généreux :
+# la consigne est que TOUT soit enregistré, la latence n'ayant pas d'importance.
+BUFFER_MAX_S = float(os.environ.get("BUFFER_MAX_S", "1800.0"))
 
-# Retard à partir duquel on cesse d'afficher les hypothèses en gris : elles
-# coûtent une inférence qui doit alors servir aux phrases en attente.
+# Les hypothèses en gris sont désactivées par défaut : chacune consomme une
+# inférence qui doit revenir aux phrases en attente. Elles n'ont de sens que si
+# l'affichage immédiat compte plus que le rattrapage, ce qui n'est pas le choix
+# retenu ici.
 PARTIAL_MAX_LAG_S = float(os.environ.get("PARTIAL_MAX_LAG_S", "6.0"))
-PARTIALS_ENABLED = os.environ.get("PARTIALS_ENABLED", "true").lower() == "true"
+PARTIALS_ENABLED = os.environ.get("PARTIALS_ENABLED", "false").lower() == "true"
 PARTIAL_MIN_S = float(os.environ.get("PARTIAL_MIN_S", "2.0"))
 
 # Filet : aucune passe ne doit pouvoir figer une session, comme observé sur le
@@ -445,7 +448,7 @@ async def _emit(session: Session, kind: str, text: str) -> None:
 # ── Boucle de session ───────────────────────────────────────────────────────
 
 
-def _next_utterance(session: Session) -> tuple[np.ndarray, float, bool] | None:
+def _next_utterance(session: Session, final: bool = False) -> tuple[np.ndarray, float, bool] | None:
     """
     Cherche la prochaine phrase à transcrire au début du tampon.
 
@@ -454,6 +457,9 @@ def _next_utterance(session: Session) -> tuple[np.ndarray, float, bool] | None:
     « Phrase terminée » signifie qu'un silence d'au moins SILENCE_S a été observé
     après elle : son texte est définitif. Sinon c'est une phrase en cours, dont
     on peut afficher une hypothèse sans rien consommer.
+
+    `final=True` à la fermeture : plus aucun audio n'arrivera, donc la dernière
+    phrase est terminée même sans silence de fin.
     """
     # On n'examine que le début du tampon : c'est là que se trouve la prochaine
     # phrase, et scruter cinq minutes d'audio à chaque tour serait absurde.
@@ -478,7 +484,7 @@ def _next_utterance(session: Session) -> tuple[np.ndarray, float, bool] | None:
 
     # Silero fusionne déjà les plages séparées par moins de SILENCE_S, donc un
     # silence suffisant après la première plage marque bien une fin de phrase.
-    finished = trailing_s >= SILENCE_S or speech_s >= MAX_UTTERANCE_S
+    finished = final or trailing_s >= SILENCE_S or speech_s >= MAX_UTTERANCE_S
 
     if finished:
         cut = min(speech_s, MAX_UTTERANCE_S)
@@ -591,12 +597,32 @@ async def _session_loop(session: Session) -> None:
             # L'hypothèse affichée ne sera jamais confirmée : on l'efface.
             await _emit(session, "partial", "")
 
-    # Fin de session : ce qui reste dans le tampon est la dernière phrase.
-    remaining = session.head(MAX_UTTERANCE_S)
-    if len(remaining) / SAMPLE_RATE >= MIN_UTTERANCE_S and speech_runs(remaining):
-        text = await _run_inference(session, remaining)
+    # Fin de session : on vide le tampon JUSQU'AU BOUT, phrase par phrase.
+    #
+    # C'est le seul moment où un retard accumulé se rattrape. Ne traiter que la
+    # dernière phrase perdrait tout ce qui attendait derrière — soit, en cas de
+    # retard d'une minute, la moitié de ce que la personne a dit.
+    pending = session.buffered_seconds()
+    if pending > MIN_UTTERANCE_S:
+        log.info(
+            "Rattrapage de fin · %s · %.1f s en attente", session.speaker_name, pending
+        )
+
+    while True:
+        found = await asyncio.to_thread(_next_utterance, session, True)
+        if found is None:
+            break
+        audio, consume_s, _finished = found
+        session.advance(consume_s)
+        text = await _run_inference(session, audio)
         if text:
             await _commit(session, text)
+
+    if pending > MIN_UTTERANCE_S:
+        log.info(
+            "Session vidée · %s · %d phrases au total · %.1f s abandonnées",
+            session.speaker_name, session.utterances, session.dropped_seconds,
+        )
 
 
 # ── API HTTP ────────────────────────────────────────────────────────────────
