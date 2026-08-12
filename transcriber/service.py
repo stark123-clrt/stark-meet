@@ -66,6 +66,22 @@ LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "fr") or None
 # qui sont gratuites. À comparer par la mesure avant de trancher.
 WORD_TIMESTAMPS = os.environ.get("WHISPER_WORD_TIMESTAMPS", "true").lower() == "true"
 
+# Longueur à laquelle Whisper complète la fenêtre avant de l'encoder. Son défaut
+# est 30 s, et c'est LE poste de dépense : mesuré sur le VPS, une fenêtre de 2 s
+# et une de 5 s coûtent le même temps de calcul, ce qui prouve qu'on paie 30 s
+# dans les deux cas. Réduire ce remplissage à peine plus que la fenêtre réelle
+# divise le travail de l'encodeur d'autant.
+#
+# Contrepartie : le modèle n'a jamais vu d'entrées courtes à l'entraînement, la
+# qualité peut s'en ressentir. À valider par la mesure, d'où la variable.
+# 0 = ne rien passer, donc comportement d'origine.
+CHUNK_LENGTH = int(os.environ.get("WHISPER_CHUNK_LENGTH", "6"))
+
+# Le paramètre n'existe pas dans toutes les versions de faster-whisper. On sonde
+# une fois, puis on s'en souvient au lieu de lever la même exception à chaque
+# passe.
+_chunk_length_supported = CHUNK_LENGTH > 0
+
 INITIAL_PROMPT = os.environ.get(
     "WHISPER_PROMPT",
     "Réunion Stark Meet. Visioconférence, mediasoup, Supabase, agent IA, "
@@ -103,6 +119,9 @@ MAX_LAG_S = float(os.environ.get("MAX_LAG_S", "3.0"))
 # puisse pas figer une session comme observé sur le VPS.
 INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "8.0"))
 
+# Perte d'audio minimale avant d'écrire « […] » dans le transcript.
+HOLE_MIN_S = float(os.environ.get("HOLE_MIN_S", "1.5"))
+
 NODE_CALLBACK = os.environ.get("NODE_CALLBACK_URL", "http://127.0.0.1:3001")
 # En `--network host`, le port 3001 de l'hôte appartient à Traefik : ce défaut
 # ne sert qu'au développement, la vraie valeur est l'URL publique de mediasoup.
@@ -139,18 +158,20 @@ def _transcribe_window(audio: np.ndarray) -> list[tuple[str, float, float]]:
     Renvoie une liste de (mot, début, fin) — au mot et non à la phrase, car
     LocalAgreement-2 compare mot à mot et l'ancrage avance à la fin d'un mot.
     """
-    global _model
+    global _model, _chunk_length_supported
     if _model is None:  # ceinture : le pool devrait avoir appelé _init_worker
         _init_worker()
 
-    segments, _info = _model.transcribe(
-        audio,
+    options = dict(
         beam_size=BEAM_SIZE,
         language=LANGUAGE,
         initial_prompt=INITIAL_PROMPT,
         condition_on_previous_text=False,        # évite les boucles d'hallucination
         word_timestamps=WORD_TIMESTAMPS,
         vad_filter=False,                        # le VAD est déjà passé en amont
+        # Les jetons d'horodatage de segment sont du texte décodé en pure perte
+        # ici : on connaît déjà les bornes de la fenêtre qu'on a fournie.
+        without_timestamps=not WORD_TIMESTAMPS,
         # ⚠️ Décodage unique, sans repli sur des températures croissantes. Par
         # défaut, faster-whisper réessaie jusqu'à SIX fois quand il détecte de la
         # répétition — ce qui arrive systématiquement sur du bruit. Observé sur
@@ -158,6 +179,18 @@ def _transcribe_window(audio: np.ndarray) -> list[tuple[str, float, float]]:
         # En flux continu, mieux vaut un segment médiocre qu'une passe sans fin.
         temperature=0.0,
     )
+
+    if _chunk_length_supported:
+        try:
+            segments, _info = _model.transcribe(audio, chunk_length=CHUNK_LENGTH, **options)
+        except TypeError:
+            # Version de faster-whisper sans ce paramètre : on le note et on ne
+            # réessaiera plus.
+            _chunk_length_supported = False
+            log.warning("`chunk_length` non pris en charge — remplissage à 30 s conservé")
+            segments, _info = _model.transcribe(audio, **options)
+    else:
+        segments, _info = _model.transcribe(audio, **options)
 
     words: list[tuple[str, float, float]] = []
     for segment in segments:
@@ -240,7 +273,11 @@ class Session:
     # Cumul, contrairement au tampon qui se vide : c'est la seule mesure qui
     # répond sans ambiguïté à « le RTP arrive-t-il ? ».
     pcm_bytes: int = 0
-    pending_hole: bool = False
+    # Audio réellement perdu depuis le dernier marqueur. Compté en secondes et
+    # non par un simple drapeau : les rognages de quelques dixièmes sont normaux
+    # et signaler chacun d'eux collait un « […] » devant presque chaque phrase,
+    # ce qui rendait le marqueur illisible ET faux.
+    dropped_seconds: float = 0.0
     dropped_windows: int = 0
     passes: int = 0
     timeouts: int = 0
@@ -272,10 +309,11 @@ class Session:
             # on sacrifie l'audio le plus ancien pour ne pas dériver sans fin.
             limit = seconds_to_bytes(MAX_WINDOW_S + MAX_LAG_S)
             if len(self.buffer) > limit:
-                del self.buffer[: len(self.buffer) - seconds_to_bytes(MAX_WINDOW_S)]
+                cut = len(self.buffer) - seconds_to_bytes(MAX_WINDOW_S)
+                del self.buffer[:cut]
                 self.previous_words = []  # l'ancrage a sauté : plus rien n'est comparable
                 self.dropped_windows += 1
-                self.pending_hole = True
+                self.dropped_seconds += cut / (SAMPLE_RATE * BYTES_PER_SAMPLE)
                 log.warning("Retard > %.1f s · audio abandonné · %s", MAX_LAG_S, self.speaker_name)
 
             raw = bytes(self.buffer[: seconds_to_bytes(MAX_WINDOW_S)])
@@ -365,8 +403,9 @@ def _read_pcm(session: Session) -> None:
             # Ici, la borne tient quoi qu'il arrive en aval.
             hard_limit = seconds_to_bytes(MAX_WINDOW_S + MAX_LAG_S)
             if len(session.buffer) > hard_limit:
-                del session.buffer[: len(session.buffer) - hard_limit]
-                session.pending_hole = True
+                cut = len(session.buffer) - hard_limit
+                del session.buffer[:cut]
+                session.dropped_seconds += cut / (SAMPLE_RATE * BYTES_PER_SAMPLE)
     log.info(
         "Lecture PCM terminée · %s · %.1f s reçues",
         session.speaker_name, session.pcm_bytes / (SAMPLE_RATE * BYTES_PER_SAMPLE),
@@ -460,11 +499,14 @@ async def _commit(session: Session, words: list[tuple[str, float, float]]) -> No
         return
 
     text = _join(words)
-    # Un trou abandonné est signalé : deux phrases sans rapport collées bout à
-    # bout tromperaient le lecteur ET le LLM du compte-rendu.
-    if session.pending_hole:
+    # Un trou est signalé seulement s'il est significatif : deux phrases sans
+    # rapport collées bout à bout tromperaient le lecteur et le LLM du
+    # compte-rendu, mais un rognage de quelques dixièmes ne mérite pas un
+    # marqueur — en le signalant systématiquement, on obtenait un « […] » devant
+    # presque chaque phrase, ce qui ne renseignait plus sur rien.
+    if session.dropped_seconds >= HOLE_MIN_S:
         text = "[…] " + text
-        session.pending_hole = False
+    session.dropped_seconds = 0.0
 
     session.committed_text = f"{session.committed_text} {text}".strip()
     await _emit(session, "final", text)
@@ -517,7 +559,7 @@ async def _session_loop(session: Session) -> None:
                     INFERENCE_TIMEOUT_S, session.speaker_name, window_seconds,
                 )
                 session.timeouts += 1
-                session.pending_hole = True
+                session.dropped_seconds += window_seconds
                 session.advance(window_seconds)
                 session.previous_words = []
                 continue
@@ -596,9 +638,10 @@ async def lifespan(_app: FastAPI):
 
     log.info(
         "Service prêt · %s %s · %d processus · fenêtre %.1f-%.1fs · cadence %.1fs · "
-        "langue %s · horodatage par mot %s",
+        "langue %s · horodatage par mot %s · remplissage %s",
         MODEL_SIZE, COMPUTE_TYPE, POOL_WORKERS, MIN_WINDOW_S, MAX_WINDOW_S, CADENCE_S,
         LANGUAGE or "auto", "oui" if WORD_TIMESTAMPS else "non",
+        f"{CHUNK_LENGTH}s" if CHUNK_LENGTH > 0 else "30s (défaut)",
     )
     if not TRANSCRIBER_SECRET:
         log.warning("TRANSCRIBER_SECRET vide — Node refusera tous les renvois")
@@ -693,6 +736,9 @@ async def health() -> dict:
         "minWindowS": MIN_WINDOW_S,
         "maxWindowS": MAX_WINDOW_S,
         "cadenceS": CADENCE_S,
+        "chunkLength": CHUNK_LENGTH,
+        "wordTimestamps": WORD_TIMESTAMPS,
+        "language": LANGUAGE or "auto",
         "callbackUrl": NODE_CALLBACK,
         "secretConfigured": bool(TRANSCRIBER_SECRET),
         "sessions": [
