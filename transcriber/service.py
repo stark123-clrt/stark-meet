@@ -151,6 +151,12 @@ PARTIAL_MIN_S = float(os.environ.get("PARTIAL_MIN_S", "2.0"))
 # VPS (36 s de calcul pour 2 s d'audio).
 INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "60.0"))
 
+# Relance de ffmpeg. Le plafond évite qu'un flux définitivement cassé — port
+# occupé, codec refusé — ne relance un processus toutes les demi-secondes
+# pendant toute la réunion.
+FFMPEG_MAX_RESTARTS = int(os.environ.get("FFMPEG_MAX_RESTARTS", "20"))
+FFMPEG_RESTART_DELAY_S = float(os.environ.get("FFMPEG_RESTART_DELAY_S", "0.5"))
+
 # Perte d'audio minimale avant d'écrire « […] » dans le transcript.
 HOLE_MIN_S = float(os.environ.get("HOLE_MIN_S", "1.5"))
 
@@ -317,6 +323,7 @@ class Session:
     utterances: int = 0
     partials: int = 0
     timeouts: int = 0
+    restarts: int = 0
     last_inference_s: float = 0.0
     last_partial_at: float = 0.0
     started_at: float = field(default_factory=time.time)
@@ -393,32 +400,75 @@ def _spawn_ffmpeg(session: Session) -> subprocess.Popen:
 
 
 def _read_pcm(session: Session) -> None:
-    """Thread de lecture : vide la sortie de ffmpeg dans le tampon."""
-    stream = session.ffmpeg.stdout if session.ffmpeg else None
-    if stream is None:
-        return
+    """
+    Thread de lecture : vide la sortie de ffmpeg dans le tampon, et **relance
+    ffmpeg** s'il s'arrête alors que la session est toujours active.
+
+    ⚠️ Cette relance n'est pas un luxe. ffmpeg abandonne de lui-même quand aucun
+    paquet ne lui parvient pendant un moment (« Connection timed out »), ce qui
+    peut arriver sur le simple creux entre son démarrage et la première émission
+    de mediasoup. Sans surveillance, le processus meurt, ce fil se termine, et la
+    session reste vivante à recevoir zéro octet pour le reste de la réunion —
+    exactement ce qui est arrivé à un participant en production, dont pas une
+    seule phrase n'a été transcrite.
+    """
     hard_limit = seconds_to_bytes(BUFFER_MAX_S)
+    attempts = 0
+
     while not session.stop_flag.is_set():
-        chunk = stream.read(4096)
-        if not chunk:
+        stream = session.ffmpeg.stdout if session.ffmpeg else None
+        if stream is None:
             break
-        with session.lock:
-            session.buffer.extend(chunk)
-            session.pcm_bytes += len(chunk)
-            # Seul endroit du service où de l'audio est perdu, et il faut cinq
-            # minutes de retard pour l'atteindre : à ce stade la machine est hors
-            # service, et laisser la mémoire enfler ne ferait qu'aggraver.
-            if len(session.buffer) > hard_limit:
-                cut = len(session.buffer) - hard_limit
-                del session.buffer[:cut]
-                session.dropped_seconds += bytes_to_seconds(cut)
-                log.error(
-                    "Retard de plus de %.0f s · audio abandonné · %s",
-                    BUFFER_MAX_S, session.speaker_name,
-                )
+
+        while not session.stop_flag.is_set():
+            chunk = stream.read(4096)
+            if not chunk:
+                break
+            with session.lock:
+                session.buffer.extend(chunk)
+                session.pcm_bytes += len(chunk)
+                # Seul endroit du service où de l'audio est perdu, et il faut une
+                # demi-heure de retard pour l'atteindre : à ce stade la machine
+                # est hors service, et laisser la mémoire enfler aggraverait tout.
+                if len(session.buffer) > hard_limit:
+                    cut = len(session.buffer) - hard_limit
+                    del session.buffer[:cut]
+                    session.dropped_seconds += bytes_to_seconds(cut)
+                    log.error(
+                        "Retard de plus de %.0f s · audio abandonné · %s",
+                        BUFFER_MAX_S, session.speaker_name,
+                    )
+
+        if session.stop_flag.is_set():
+            break
+
+        # ffmpeg s'est arrêté seul : on le relance tant que la session vit.
+        attempts += 1
+        code = session.ffmpeg.poll() if session.ffmpeg else None
+        if attempts > FFMPEG_MAX_RESTARTS:
+            log.error(
+                "ffmpeg s'arrête en boucle (%d tentatives) · %s · flux abandonné",
+                attempts, session.speaker_name,
+            )
+            break
+
+        log.warning(
+            "ffmpeg arrêté (code %s) · %s · relance %d/%d",
+            code, session.speaker_name, attempts, FFMPEG_MAX_RESTARTS,
+        )
+        time.sleep(FFMPEG_RESTART_DELAY_S)
+        try:
+            session.ffmpeg = _spawn_ffmpeg(session)
+            session.restarts += 1
+        except Exception as error:
+            log.error("Relance de ffmpeg impossible · %s: %s", session.speaker_name, error)
+            break
+        # Le fil précédent s'est terminé avec l'ancien tuyau : il en faut un neuf.
+        threading.Thread(target=_read_stderr, args=(session,), daemon=True).start()
+
     log.info(
-        "Lecture PCM terminée · %s · %.1f s reçues",
-        session.speaker_name, bytes_to_seconds(session.pcm_bytes),
+        "Lecture PCM terminée · %s · %.1f s reçues · %d relance(s)",
+        session.speaker_name, bytes_to_seconds(session.pcm_bytes), session.restarts,
     )
 
 
@@ -858,6 +908,7 @@ async def health() -> dict:
                 "partials": s.partials,
                 "lastInferenceS": round(s.last_inference_s, 2),
                 "timeouts": s.timeouts,
+                "ffmpegRestarts": s.restarts,
                 "droppedSeconds": round(s.dropped_seconds, 1),
                 "words": len(s.committed_text.split()),
             }

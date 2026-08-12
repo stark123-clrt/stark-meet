@@ -228,6 +228,13 @@ async function startFork({ router, producerId, meetingId, speakerName, participa
         payloadType: codec.payloadType,
       });
       destinationIp = SERVICE_HOST;
+
+      // Laisser à ffmpeg le temps de se lier au port avant d'émettre. Sans cette
+      // pause, les premiers paquets tombent dans le vide — et ffmpeg, qui n'a
+      // encore rien reçu, peut abandonner sur son propre délai d'attente. Un
+      // participant s'est ainsi retrouvé avec zéro octet reçu pendant toute une
+      // réunion, alors que mediasoup l'entendait parfaitement.
+      await new Promise((resolve) => setTimeout(resolve, FFMPEG_BIND_DELAY_MS));
     }
 
     // ⚠️ Sans `connect`, mediasoup n'infère pas la destination avec
