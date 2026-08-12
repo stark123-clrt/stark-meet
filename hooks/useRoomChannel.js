@@ -19,9 +19,14 @@ import io from 'socket.io-client';
 
 const MEDIASOUP_SERVER_URL = process.env.NEXT_PUBLIC_MEDIASOUP_URL || 'http://localhost:3001';
 
-// Fenêtre d'affichage du transcript. Le serveur applique la même borne : une
-// réunion de deux heures ne doit pas faire enfler la mémoire du navigateur.
-const TRANSCRIPT_LIMIT = 400;
+// Fenêtre d'affichage du transcript, alignée sur celle du serveur. À 400, elle
+// se remplissait en une heure de conversation et le panneau paraissait figé,
+// alors qu'il faisait défiler silencieusement les plus anciennes lignes.
+//
+// Au-delà de quelques milliers de lignes affichées, c'est le navigateur qui
+// peinera à tout redessiner, pas la mémoire. Si ça arrive, la réponse sera
+// l'affichage virtualisé, pas un plafond plus bas.
+const TRANSCRIPT_LIMIT = 20000;
 
 export default function useRoomChannel({
   meetingId,

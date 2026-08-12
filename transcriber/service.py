@@ -124,14 +124,18 @@ MIN_UTTERANCE_S = float(os.environ.get("MIN_UTTERANCE_S", "0.4"))
 # calcule que lorsqu'une phrase est prête.
 POLL_S = float(os.environ.get("POLL_S", "0.5"))
 
-# Phrases transcrites SIMULTANÉMENT pour un même locuteur.
+# Phrases en attente ou en cours de traitement, pour un même locuteur.
 #
-# Sans ça, une personne seule n'occupe qu'un processus d'inférence sur deux :
-# la moitié du calcul disponible dort pendant que le retard s'accumule. Les
-# phrases sont extraites du tampon dans l'ordre, lancées en parallèle, puis
-# réordonnées avant affichage — le texte reste donc dans l'ordre où il a été
-# prononcé.
-PARALLEL_UTTERANCES = int(os.environ.get("PARALLEL_UTTERANCES", str(POOL_WORKERS)))
+# Volontairement SUPÉRIEUR au nombre de processus d'inférence. Ce n'est pas une
+# erreur : les emplacements excédentaires servent de file d'attente. Calés sur
+# le nombre de processus, ils faisaient cesser l'extraction dès que tous
+# calculaient — et un processus qui se libérait devait attendre le tour de
+# boucle suivant pour recevoir du travail. Avec de la marge, la file reste
+# alimentée et les processus ne chôment jamais.
+#
+# Les phrases sont extraites du tampon dans l'ordre, traitées en parallèle, puis
+# réordonnées avant affichage : le texte reste dans l'ordre où il a été prononcé.
+PARALLEL_UTTERANCES = int(os.environ.get("PARALLEL_UTTERANCES", "5"))
 
 # Garde-fou mémoire, très au-delà de tout retard plausible : une demi-heure
 # d'audio ne pèse que 58 Mio. C'est la seule circonstance où de l'audio est
@@ -674,13 +678,16 @@ async def _session_loop(session: Session) -> None:
     On n'infère que lorsqu'il y a quelque chose à transcrire, et on lance
     plusieurs phrases de front tant que des processus d'inférence sont libres.
     """
-    semaphore = ROOM_LOCKS.setdefault(session.meeting_id, asyncio.Semaphore(POOL_WORKERS))
+    semaphore = ROOM_LOCKS.setdefault(
+        session.meeting_id, asyncio.Semaphore(PARALLEL_UTTERANCES)
+    )
     inflight: list[asyncio.Task] = []
 
     async def transcribe(audio, consume_s: float, lag: float):
-        # Le sémaphore borne la concurrence à l'échelle de la RÉUNION : deux
-        # locuteurs lançant chacun deux phrases ne doivent pas se retrouver à
-        # quatre inférences pour deux processus.
+        # Le sémaphore borne la file à l'échelle de la RÉUNION. Le vrai plafond
+        # de calcul reste le pool de processus, qui met en attente ce qu'il ne
+        # peut pas traiter — ici on empêche seulement une réunion entière de
+        # remplir la file sans limite.
         async with semaphore:
             text = await _run_inference(session, audio)
         return text, consume_s, len(audio) / SAMPLE_RATE, lag

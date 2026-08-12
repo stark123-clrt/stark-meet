@@ -82,7 +82,14 @@ const TRANSCRIBER_SECRET = process.env.TRANSCRIBER_SECRET || '';
 // persisté à ce jalon : la table `meeting_transcript_segments` viendra avec le
 // compte-rendu, qui est le seul consommateur ayant besoin de durabilité.
 const transcripts = new Map(); // meetingId -> { finals: [], partials: Map }
-const TRANSCRIPT_HISTORY_LIMIT = 400;
+
+// 20 000 phrases, soit des dizaines d'heures de conversation. L'ancienne borne
+// de 400 était trop prudente : elle se remplissait en une heure et le transcript
+// semblait alors « s'arrêter », alors qu'une phrase pèse environ 200 octets —
+// 20 000 tiennent dans 4 Mio. Ce plafond n'est plus qu'un garde-fou contre une
+// fuite, pas une contrainte d'usage. La vraie levée de la limite viendra de la
+// persistance en base, qui permettra aussi de relire une réunion passée.
+const TRANSCRIPT_HISTORY_LIMIT = Number(process.env.TRANSCRIPT_HISTORY_LIMIT) || 20000;
 
 function transcriptStore(meetingId) {
   if (!transcripts.has(meetingId)) {
