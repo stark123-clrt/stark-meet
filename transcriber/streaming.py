@@ -651,9 +651,18 @@ async def correct_text(raw: str) -> str | None:
 
     text = (body.get("response") or "").strip()
 
-    # Garde-fous contre un modèle bavard malgré la consigne. Les guillemets
-    # encadrants sont fréquents, et une réponse démesurée signale une phrase
-    # d'introduction ou un commentaire — auquel cas on préfère le texte brut.
+    # Nettoyage plutôt que rejet. Un petit modèle préfixe volontiers sa réponse
+    # — « Bien sûr, voici le texte corrigé : … » — malgré la consigne. Jeter la
+    # correction pour ça serait perdre du bon texte à cause d'une politesse.
+    #
+    # Le deux-points est un repère sûr ici : le texte brut sort d'un transducteur
+    # qui ne produit aucune ponctuation, un deux-points en tête de réponse ne peut
+    # donc venir que du modèle. On se limite aux 60 premiers caractères pour ne
+    # pas amputer une phrase qui en contiendrait un légitimement.
+    head = text[:60]
+    if ":" in head:
+        text = text[head.index(":") + 1 :].strip()
+
     if text.startswith('"') and text.endswith('"'):
         text = text[1:-1].strip()
     if not text or len(text) > max(80, len(raw) * 3):
