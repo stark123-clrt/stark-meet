@@ -105,7 +105,11 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
 
 # Délai de garde. Au-delà, on publie le texte brut : une panne du correcteur ne
 # doit jamais rendre la transcription muette.
-LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "8.0"))
+#
+# 25 s et non 8 : mesuré sur ce VPS, une correction demande cinq à sept secondes,
+# auxquelles s'ajoute l'attente derrière la précédente. À 8 s, la majorité des
+# corrections étaient abandonnées juste avant d'aboutir.
+LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "25.0"))
 
 # Corrections simultanées, toutes sessions confondues. Sans cette borne, trois
 # locuteurs terminant leurs phrases en même temps lanceraient trois générations
@@ -116,12 +120,21 @@ LLM_MAX_CONCURRENT = int(os.environ.get("LLM_MAX_CONCURRENT", "1"))
 # entrée ; au-delà, c'est que le modèle a commencé à bavarder malgré la consigne.
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "256"))
 
+# La consigne insiste sur ce que le modèle fait spontanément de travers.
+#
+# Observé en production : « Quant à un nombre de fois » rendu « Quant à une
+# certaine quantité de fois ». La cause est que l'endpointing découpe la parole
+# en segments souvent INCOMPLETS, et qu'un modèle à qui l'on demande de corriger
+# un fragment cherche naturellement à le rendre sensé. D'où la consigne explicite
+# de laisser les phrases inachevées telles quelles, et de ne changer aucun mot
+# qui s'écrit déjà correctement.
 LLM_PROMPT = os.environ.get(
     "LLM_PROMPT",
-    "Tu es un correcteur orthographique et de syntaxe de transcription vocale. "
-    "Corrige les fautes, la ponctuation et les erreurs phonétiques de cette phrase. "
-    "Ne modifie pas le sens. Ne rajoute AUCUN commentaire, aucune introduction, "
-    'renvoie UNIQUEMENT le texte corrigé. Texte : "{raw_text}"',
+    "Tu corriges une transcription vocale française. Ajoute uniquement les "
+    "accents, la ponctuation et les majuscules manquants, et corrige les fautes "
+    "d'orthographe. Ne remplace JAMAIS un mot par un synonyme. Ne complète pas "
+    "les phrases inachevées : laisse-les inachevées. Ne rajoute aucun commentaire. "
+    'Renvoie uniquement le texte corrigé. Texte : "{raw_text}"',
 )
 
 # Publier le texte brut immédiatement, puis le remplacer par la version corrigée.
