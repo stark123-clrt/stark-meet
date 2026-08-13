@@ -124,14 +124,38 @@ LLM_PROMPT = os.environ.get(
     'renvoie UNIQUEMENT le texte corrigé. Texte : "{raw_text}"',
 )
 
-# Publier le texte brut immédiatement, puis la version corrigée. Désactivé par
-# défaut pour rester conforme à la spécification — mais c'est le comportement que
-# je recommanderais : il garantit que la phrase s'affiche à l'instant où elle se
-# termine, la correction ne faisant que la remplacer ensuite. L'affichage exige
-# alors de remplacer un segment par son `segmentId`.
-LLM_RAW_FIRST = os.environ.get("LLM_RAW_FIRST", "false").lower() == "true"
+# Publier le texte brut immédiatement, puis le remplacer par la version corrigée.
+#
+# Activé par défaut, et c'est ce qui rend la lenteur du LLM sans conséquence : la
+# phrase s'affiche à l'instant où elle se termine, la correction ne fait que la
+# remplacer ensuite. Sans ça, une correction de trois secondes laisserait l'écran
+# vide pendant trois secondes.
+#
+# Le remplacement se fait par `segmentId`, côté serveur et côté navigateur.
+LLM_RAW_FIRST = os.environ.get("LLM_RAW_FIRST", "true").lower() == "true"
 
-llm_stats = {"corrected": 0, "failed": 0, "timeouts": 0, "totalSeconds": 0.0}
+# Part maximale de mots modifiés qu'on accepte d'une correction.
+#
+# ⚠️ Garde-fou indispensable, et pas théorique : sur « ingénieur des logiciels »,
+# qwen2.5:1.5b a rendu « ingénieur des systèmes ». Un petit modèle ne corrige pas,
+# il complète avec ce qui lui semble le plus probable — consigne ou pas. Dans un
+# compte-rendu de réunion, réécrire ce que les gens ont dit est pire que laisser
+# une faute d'orthographe. Au-delà de ce seuil, on publie le texte brut.
+LLM_MAX_CHANGE_RATIO = float(os.environ.get("LLM_MAX_CHANGE_RATIO", "0.34"))
+
+# Corrections en attente au-delà desquelles on cesse d'en demander.
+#
+# ⚠️ Sans cette borne, une file sans fin se formerait dès que le LLM est plus lent
+# que la parole : mesuré sur ce VPS, 60 s par correction contre une phrase toutes
+# les 5 s. Les tâches s'accumuleraient jusqu'à épuiser la mémoire, en corrigeant
+# des phrases vieilles de plusieurs minutes. Mieux vaut sauter des corrections que
+# prendre un retard irrattrapable.
+LLM_MAX_PENDING = int(os.environ.get("LLM_MAX_PENDING", "2"))
+
+llm_stats = {
+    "corrected": 0, "failed": 0, "timeouts": 0, "rejected": 0, "skipped": 0,
+    "pending": 0, "totalSeconds": 0.0,
+}
 _http_session = None
 _llm_semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENT)
 
@@ -237,21 +261,33 @@ def load_recognizer():
     log.info("Modèle chargé · %s · %d threads · %s", directory, NUM_THREADS, DECODING)
 
 
-def prettify(text: str) -> str:
+def prettify(text: str, sentence: bool = False) -> str:
     """
-    Rend lisible la sortie du transducteur.
+    Rend lisible la sortie du transducteur, sans aucun modèle.
 
-    Ces modèles produisent du texte en capitales et sans ponctuation. En
-    attendant un modèle de restauration de ponctuation, on se contente de
-    normaliser la casse — un pis-aller assumé, mais qui rend le panneau
-    lisible.
+    Ces modèles produisent du texte en capitales et sans ponctuation. Mais on
+    dispose gratuitement de ce qui coûte le plus cher à retrouver : **les
+    frontières de phrases**. L'endpointing du transducteur les détecte
+    lui-même — c'est lui qui déclenche chaque `final` — donc un segment confirmé
+    EST une phrase complète.
+
+    Majuscule initiale et point final s'en déduisent sans rien calculer. Reste
+    la ponctuation interne, les virgules, qui demanderait un vrai modèle : c'est
+    la part la moins utile à la lecture, et la moins gênante pour le LLM du
+    compte-rendu.
+
+    `sentence=True` marque une phrase confirmée ; une hypothèse en cours ne doit
+    pas recevoir de point, elle n'est pas finie.
     """
     text = text.strip()
     if not text:
         return text
     if text.isupper():
         text = text.lower()
-    return text[0].upper() + text[1:]
+    text = text[0].upper() + text[1:]
+    if sentence and text[-1] not in ".!?…,;:":
+        text += "."
+    return text
 
 
 # ── Session ─────────────────────────────────────────────────────────────────
@@ -493,6 +529,45 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
 # ── Correction par LLM ──────────────────────────────────────────────────────
 
 
+def _words(text: str) -> list[str]:
+    """Mots comparables : sans accents, sans ponctuation, sans casse."""
+    import re
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", text.lower())
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return [word for word in re.split(r"[^a-z0-9]+", text) if word]
+
+
+def changed_too_much(raw: str, corrected: str) -> bool:
+    """
+    Vrai si la correction s'écarte trop du texte d'origine.
+
+    La comparaison ignore accents, ponctuation et casse — précisément ce que la
+    correction est censée ajouter. Ne reste donc que ce qui compte : les mots
+    a-t-il changés ? Une distance d'édition au mot répond exactement à ça.
+    """
+    reference = _words(raw)
+    hypothesis = _words(corrected)
+    if not reference:
+        return True
+
+    # Levenshtein au mot, sur une seule ligne de travail : les phrases font
+    # quelques dizaines de mots, le coût est négligeable.
+    previous = list(range(len(hypothesis) + 1))
+    for i, ref_word in enumerate(reference, 1):
+        current = [i]
+        for j, hyp_word in enumerate(hypothesis, 1):
+            current.append(min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + (0 if ref_word == hyp_word else 1),
+            ))
+        previous = current
+
+    return previous[-1] > max(1, LLM_MAX_CHANGE_RATIO * len(reference))
+
+
 async def correct_text(raw: str) -> str | None:
     """
     Fait corriger une phrase par Ollama. Renvoie None si ça échoue.
@@ -549,6 +624,13 @@ async def correct_text(raw: str) -> str | None:
         llm_stats["failed"] += 1
         return None
 
+    # Le modèle a-t-il corrigé, ou reformulé ? Dans le doute, le texte brut est
+    # plus fidèle qu'une belle phrase qui dit autre chose.
+    if changed_too_much(raw, text):
+        llm_stats["rejected"] += 1
+        log.warning("Correction écartée (sens modifié)\n  brut     : %s\n  corrigé  : %s", raw, text)
+        return None
+
     llm_stats["corrected"] += 1
     llm_stats["totalSeconds"] += time.perf_counter() - started
     return text
@@ -569,7 +651,16 @@ async def send_final(websocket: WebSocket, payload: dict) -> None:
         # remplacera par son `segmentId`.
         await websocket.send_text(json.dumps({**payload, "corrected": False}))
 
-    corrected = await correct_text(raw)
+    llm_stats["pending"] += 1
+    try:
+        corrected = await correct_text(raw)
+    finally:
+        llm_stats["pending"] -= 1
+
+    # Rien de neuf à publier : le texte brut est déjà à l'écran.
+    if corrected is None and LLM_RAW_FIRST:
+        return
+
     await websocket.send_text(json.dumps({
         **payload,
         "text": corrected or raw,
@@ -661,6 +752,13 @@ async def stream_endpoint(websocket: WebSocket) -> None:
             payload = await results.get()
 
             if payload["type"] == "final" and LLM_ENABLED:
+                if llm_stats["pending"] >= LLM_MAX_PENDING:
+                    # Le correcteur est débordé : on publie brut sans l'engorger
+                    # davantage. Une phrase juste et non ponctuée vaut mieux
+                    # qu'une file qui s'allonge sans fin.
+                    llm_stats["skipped"] += 1
+                    await websocket.send_text(json.dumps({**payload, "corrected": False}))
+                    continue
                 task = asyncio.create_task(send_final(websocket, payload))
                 corrections.add(task)
                 task.add_done_callback(corrections.discard)

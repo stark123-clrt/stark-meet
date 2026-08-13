@@ -126,14 +126,27 @@ export default function useRoomChannel({
     socket.on('control:transcript-final', ({ segment }) => {
       const { finals, partials } = transcriptRef.current;
 
-      // Insertion à sa place CHRONOLOGIQUE. Deux locuteurs dont les
-      // transcriptions n'avancent pas au même rythme arrivent dans le désordre,
-      // et une réponse s'afficherait alors avant sa question. On remonte depuis
-      // la fin, le cas courant restant l'ajout en queue.
       const next = [...finals];
-      let index = next.length;
-      while (index > 0 && (next[index - 1].spokenAt ?? 0) > (segment.spokenAt ?? 0)) index -= 1;
-      next.splice(index, 0, withId(segment));
+
+      // Une phrase déjà affichée est REMPLACÉE sur place. C'est ce qui permet au
+      // texte brut d'apparaître instantanément puis d'être corrigé par le LLM
+      // quelques secondes plus tard, sans doublon ni saut à la lecture. On
+      // conserve son identifiant de rendu pour que React ne remonte pas la ligne.
+      const existing = segment.segmentId
+        ? next.findIndex((item) => item.segmentId === segment.segmentId)
+        : -1;
+
+      if (existing >= 0) {
+        next[existing] = { ...segment, id: next[existing].id };
+      } else {
+        // Insertion à sa place CHRONOLOGIQUE. Deux locuteurs dont les
+        // transcriptions n'avancent pas au même rythme arrivent dans le
+        // désordre, et une réponse s'afficherait alors avant sa question. On
+        // remonte depuis la fin, le cas courant restant l'ajout en queue.
+        let index = next.length;
+        while (index > 0 && (next[index - 1].spokenAt ?? 0) > (segment.spokenAt ?? 0)) index -= 1;
+        next.splice(index, 0, withId(segment));
+      }
 
       publishTranscript({
         finals: next.slice(-TRANSCRIPT_LIMIT),
