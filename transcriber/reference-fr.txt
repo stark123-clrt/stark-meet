@@ -1,0 +1,17 @@
+Bonjour à tous. Je m'appelle Christian Ondiyo, je suis développeur web et ingénieur logiciel.
+
+Ce soir, je tiens à vous présenter un projet qui me tient à cœur. Il s'appelle Stark Meet,
+et c'est une application de visioconférence que j'héberge entièrement moi-même.
+
+L'architecture repose sur trois briques. Un serveur mediasoup, qui distribue l'audio et la
+vidéo entre les participants. Une base de données Supabase pour les comptes et les réunions.
+Et un module de transcription automatique qui écrit en direct ce que chacun dit.
+
+Aujourd'hui, la plateforme supporte une trentaine de participants dans une même salle. Le
+chat fonctionne en temps réel, l'hôte peut couper le micro de n'importe qui, et le partage
+d'écran est disponible.
+
+La prochaine étape sera le compte-rendu automatique. À la fin de chaque réunion, une
+intelligence artificielle rédigera un résumé des décisions et des actions à mener.
+
+Merci de votre attention, et j'espère que ce projet vous plaira autant qu'à moi.

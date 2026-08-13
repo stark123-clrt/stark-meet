@@ -36,7 +36,8 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]>=0.27" \
     requests \
     numpy \
-    onnxruntime
+    onnxruntime \
+    sherpa-onnx
 
 WORKDIR /app
 COPY transcriber/ ./

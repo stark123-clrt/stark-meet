@@ -164,6 +164,14 @@ FFMPEG_RESTART_DELAY_S = float(os.environ.get("FFMPEG_RESTART_DELAY_S", "0.5"))
 # Perte d'audio minimale avant d'écrire « […] » dans le transcript.
 HOLE_MIN_S = float(os.environ.get("HOLE_MIN_S", "1.5"))
 
+# Capture de l'audio exactement tel que le modèle le reçoit — PCM 16 kHz mono,
+# après décodage et rééchantillonnage. Désactivée par défaut.
+#
+# Sert à constituer un corpus de non-régression : c'est le seul moyen de comparer
+# honnêtement deux modèles, en leur donnant le MÊME signal plutôt que deux
+# lectures différentes du même texte.
+DUMP_WAV_DIR = os.environ.get("DUMP_WAV_DIR", "")
+
 NODE_CALLBACK = os.environ.get("NODE_CALLBACK_URL", "http://127.0.0.1:3001")
 TRANSCRIBER_SECRET = os.environ.get("TRANSCRIBER_SECRET", "")
 CALLBACK_TIMEOUT_S = 3.0
@@ -313,6 +321,7 @@ class Session:
     ffmpeg: subprocess.Popen | None = None
     reader: threading.Thread | None = None
     stderr_reader: threading.Thread | None = None
+    wav: object | None = None  # wave.Wave_write, ouvert seulement si DUMP_WAV_DIR
     task: asyncio.Task | None = None  # référence gardée, sinon le GC peut l'annuler
     sdp_path: str = ""
 
@@ -430,6 +439,24 @@ def _read_pcm(session: Session) -> None:
     hard_limit = seconds_to_bytes(BUFFER_MAX_S)
     attempts = 0
 
+    # Le fil de lecture est propriétaire du fichier : il l'ouvre, l'alimente et
+    # le referme, ce qui évite d'avoir à le synchroniser avec un autre thread.
+    if DUMP_WAV_DIR:
+        try:
+            import wave
+
+            os.makedirs(DUMP_WAV_DIR, exist_ok=True)
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in session.speaker_name)
+            path = os.path.join(DUMP_WAV_DIR, f"{int(session.started_at)}-{safe}.wav")
+            handle = wave.open(path, "wb")
+            handle.setnchannels(1)
+            handle.setsampwidth(BYTES_PER_SAMPLE)
+            handle.setframerate(SAMPLE_RATE)
+            session.wav = handle
+            log.info("Capture audio · %s → %s", session.speaker_name, path)
+        except Exception as error:
+            log.warning("Capture audio impossible · %s: %s", session.speaker_name, error)
+
     while not session.stop_flag.is_set():
         stream = session.ffmpeg.stdout if session.ffmpeg else None
         if stream is None:
@@ -439,6 +466,11 @@ def _read_pcm(session: Session) -> None:
             chunk = stream.read(4096)
             if not chunk:
                 break
+            if session.wav is not None:
+                try:
+                    session.wav.writeframes(chunk)
+                except Exception:
+                    session.wav = None  # disque plein ou fichier fermé : on continue sans
             with session.lock:
                 if session.audio_epoch == 0.0:
                     # Premier échantillon : c'est l'origine de l'horloge du flux.
@@ -486,6 +518,13 @@ def _read_pcm(session: Session) -> None:
             break
         # Le fil précédent s'est terminé avec l'ancien tuyau : il en faut un neuf.
         threading.Thread(target=_read_stderr, args=(session,), daemon=True).start()
+
+    if session.wav is not None:
+        try:
+            session.wav.close()
+        except Exception:
+            pass
+        session.wav = None
 
     log.info(
         "Lecture PCM terminée · %s · %.1f s reçues · %d relance(s)",
