@@ -19,10 +19,16 @@ COPY package*.json ./
 # Installer les dépendances (inclut mediasoup)
 RUN npm ci --only=production
 
-# Copier le serveur Mediasoup et ses modules. Lister les fichiers un à un est
-# une source d'oubli : un nouveau module absent de l'image provoque un
-# « Cannot find module » au démarrage, après un déploiement complet.
-COPY server-mediasoup.js transcription-fork.js ./
+# Copier le serveur Mediasoup et TOUS ses modules.
+#
+# ⚠️ Le motif est délibéré. La version précédente listait les fichiers un à un,
+# et l'ajout de `transcription-stream.js` a fait échouer le démarrage sur un
+# « Cannot find module » — après un déploiement complet, donc plusieurs minutes
+# avant de voir l'erreur. Un motif ne peut pas oublier un fichier.
+#
+# Les fichiers de configuration du front (next, tailwind, postcss) sont copiés au
+# passage : quelques kilo-octets inertes, contre un mode de panne supprimé.
+COPY *.js ./
 
 # Exposer les ports
 EXPOSE 3001
