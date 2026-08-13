@@ -25,9 +25,16 @@ FROM python:3.11-slim
 # (le runtime de faster-whisper) pour son parallélisme OpenMP : absent de
 # l'image slim, et son absence ne se manifeste qu'à l'import, par une erreur de
 # bibliothèque partagée peu explicite.
+# libopus0 : décodage Opus en bibliothèque, sans sous-processus — c'est ce qui
+#   remplace ffmpeg dans l'architecture v2.
+# ffmpeg : conservé pour l'ancienne chaîne Whisper, encore utilisable en repli.
+# libgomp1 : requis par CTranslate2 et onnxruntime pour leur parallélisme OpenMP.
+#   Absent de l'image slim, et son absence ne se manifeste qu'à l'import, par une
+#   erreur de bibliothèque partagée peu explicite.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgomp1 \
+    libopus0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
@@ -37,7 +44,9 @@ RUN pip install --no-cache-dir \
     requests \
     numpy \
     onnxruntime \
-    sherpa-onnx
+    sherpa-onnx \
+    opuslib \
+    soxr
 
 WORKDIR /app
 COPY transcriber/ ./
@@ -71,9 +80,14 @@ VOLUME ["/models"]
 ENV TRANSCRIBER_PORT=8000
 EXPOSE 8000
 
-# Forme shell, indispensable pour que $TRANSCRIBER_PORT soit interprété : en
-# forme exec, la variable serait passée littéralement à uvicorn.
+# Application servie. `streaming:app` est l'architecture v2 (sherpa-onnx,
+# WebSocket) ; `service:app` reste l'ancienne chaîne Whisper, utilisable en repli
+# en surchargeant cette variable — les deux fichiers cohabitent dans l'image.
+ENV TRANSCRIBER_APP=streaming:app
+
+# Forme shell, indispensable pour que les variables soient interprétées : en
+# forme exec, elles seraient passées littéralement à uvicorn.
 #
 # `--network host` étant utilisé, uvicorn écoute directement sur le port de
 # l'hôte : le pare-feu du VPS doit le garder fermé à l'extérieur.
-CMD python -u -m uvicorn service:app --host 0.0.0.0 --port ${TRANSCRIBER_PORT}
+CMD python -u -m uvicorn ${TRANSCRIBER_APP} --host 0.0.0.0 --port ${TRANSCRIBER_PORT}

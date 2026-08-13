@@ -24,7 +24,10 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const mediasoup = require('mediasoup');
-const transcriptionFork = require('./transcription-fork');
+// Architecture v2 : DirectTransport + WebSocket vers un transducteur causal.
+// L'ancien module `transcription-fork.js` (PlainTransport UDP + ffmpeg +
+// Whisper) reste dans le dépôt à titre de repli, mais n'est plus chargé.
+const transcription = require('./transcription-stream');
 
 const app = express();
 const server = http.createServer(app);
@@ -58,7 +61,7 @@ app.get('/transcription/stats', (req, res) => {
   // lire un état actuel alors qu'on relit celui d'il y a une heure.
   res.set('Cache-Control', 'no-store');
   res.json({
-    ...transcriptionFork.getStats(),
+    ...transcription.getStats(),
     callbackConfigured: !!process.env.TRANSCRIBER_SECRET,
     transcribedMeetings: transcripts.size,
     confirmedSegments: Array.from(transcripts.values()).reduce((sum, s) => sum + s.finals.length, 0),
@@ -98,15 +101,17 @@ function transcriptStore(meetingId) {
   return transcripts.get(meetingId);
 }
 
-app.post('/internal/transcript', (req, res) => {
-  if (!TRANSCRIBER_SECRET || req.get('X-Transcriber-Secret') !== TRANSCRIBER_SECRET) {
-    return res.status(403).json({ error: 'Secret invalide' });
-  }
-
-  const { meetingId, participantId, displayName, type, text, at, spokenAt } = req.body || {};
-  if (!meetingId || !type || typeof text !== 'string') {
-    return res.status(400).json({ error: 'Paramètres manquants' });
-  }
+/**
+ * Enregistre et rediffuse un fragment de transcription.
+ *
+ * Point d'entrée unique : le service de transcription renvoie désormais son
+ * texte par le WebSocket qui lui apporte l'audio, mais la route HTTP est
+ * conservée pour un transcripteur externe éventuel. Les deux passent par ici,
+ * pour que le stockage, le tri et la diffusion restent définis à un seul
+ * endroit.
+ */
+function recordTranscript({ meetingId, participantId, displayName, type, text, at, spokenAt }) {
+  if (!meetingId || !type || typeof text !== 'string') return false;
 
   const store = transcriptStore(meetingId);
   const segment = {
@@ -143,6 +148,20 @@ app.post('/internal/transcript', (req, res) => {
     io.to(controlRoomName(meetingId)).emit('control:transcript-partial', { segment });
   }
 
+  return true;
+}
+
+// Conservée pour un transcripteur externe qui n'utiliserait pas le WebSocket.
+// Exposée sur Internet (le service tournait en `--network host` et repassait par
+// Traefik), d'où le secret partagé : sans lui, n'importe qui injecterait du faux
+// texte dans une réunion.
+app.post('/internal/transcript', (req, res) => {
+  if (!TRANSCRIBER_SECRET || req.get('X-Transcriber-Secret') !== TRANSCRIBER_SECRET) {
+    return res.status(403).json({ error: 'Secret invalide' });
+  }
+  if (!recordTranscript(req.body || {})) {
+    return res.status(400).json({ error: 'Paramètres manquants' });
+  }
   res.json({ ok: true });
 });
 
@@ -288,10 +307,10 @@ async function getOrCreateRoom(meetingId) {
     //
     // ⚠️ `maxEntries` vaut 1 par défaut, ce qui ne remonterait que le plus fort.
     let audioLevelObserver = null;
-    if (transcriptionFork.ENABLED) {
+    if (transcription.ENABLED) {
       try {
         audioLevelObserver = await roomRouter.createAudioLevelObserver({
-          maxEntries: transcriptionFork.MAX_SESSIONS,
+          maxEntries: transcription.MAX_SESSIONS,
           threshold: -55,   // dBov : en dessous, c'est du bruit de fond
           interval: 400,    // assez court pour ouvrir une place dès les premiers mots
         });
@@ -316,18 +335,16 @@ async function getOrCreateRoom(meetingId) {
 // ============================================
 // ATTRIBUTION DES PLACES DE TRANSCRIPTION
 // ============================================
-// Le nombre de locuteurs transcrits simultanément est plafonné par le CPU
-// disponible (mesure : `small` en int8 tient ~2 locuteurs, 3 avec
-// contre-pression). Ces places vont donc à qui parle, avec hystérésis :
-// ouverture dès le premier mot, fermeture après un vrai silence — sinon on
-// couperait le fork entre deux phrases et on perdrait la moitié des paroles.
+// Le nombre de locuteurs transcrits simultanément reste plafonné par le CPU
+// (mesure du transducteur sur cette machine : RTF 0,437, soit environ deux
+// locuteurs en régime continu). Ces places vont à qui parle, avec hystérésis :
+// ouverture dès le premier mot, fermeture après un vrai silence.
 
 // 30 s et non 3 : entre deux phrases, ou entre deux prises de parole dans une
-// discussion, on se tait couramment bien plus longtemps. Refermer vite obligeait
-// ffmpeg à redémarrer à chaque reprise, et le début de la phrase suivante — le
-// temps d'amorcer le décodage — était perdu. Une place gardée plus longtemps ne
-// coûte presque rien : c'est l'inférence qui consomme du CPU, pas un fork au
-// repos. La priorité retenue est qu'aucune parole ne manque.
+// discussion, on se tait couramment bien plus longtemps. Refermer vite coûtait
+// le début de la phrase suivante, le temps de rétablir le flux. Une place gardée
+// plus longtemps ne coûte presque rien : c'est l'inférence qui consomme du CPU,
+// pas un flux au repos. La priorité retenue est qu'aucune parole ne manque.
 const IDLE_CLOSE_MS = Number(process.env.TRANSCRIPTION_IDLE_CLOSE_MS) || 30000;
 const HEARD_FORGET_MS = 60000;
 const lastHeardAt = new Map(); // producerId -> horodatage
@@ -339,32 +356,35 @@ function onVolumes(meetingId, volumes) {
   const now = Date.now();
   for (const { producer } of volumes) {
     lastHeardAt.set(producer.id, now);
-    if (transcriptionFork.hasFork(producer.id)) continue;
+    if (transcription.hasStream(producer.id)) continue;
 
     const peer = Array.from(room.peers.values()).find((p) => p.producers.has(producer.id));
     if (!peer) continue;
 
-    transcriptionFork
-      .startFork({
+    transcription
+      .startStream({
         router: room.router,
         producerId: producer.id,
         meetingId,
         speakerName: peer.userName,
         participantId: peer.userId,
+        // Le texte revient par le WebSocket qui porte l'audio, et non plus par
+        // un rappel HTTP : une connexion de moins, un secret de moins.
+        onTranscript: (payload) => recordTranscript(payload),
       })
-      .catch((err) => console.error('🎙️ Fork non démarré:', err));
+      .catch((err) => console.error('🎙️ Flux non démarré:', err));
   }
 }
 
-if (transcriptionFork.ENABLED) {
+if (transcription.ENABLED) {
   // `unref` : ce minuteur ne doit pas à lui seul maintenir le processus en vie.
   setInterval(() => {
     const now = Date.now();
 
-    for (const { producerId, speakerName } of transcriptionFork.listForks()) {
+    for (const { producerId, speakerName } of transcription.listStreams()) {
       if (now - (lastHeardAt.get(producerId) || 0) > IDLE_CLOSE_MS) {
         console.log(`🎙️ Place libérée (silence) · ${speakerName}`);
-        transcriptionFork.stopFork(producerId);
+        transcription.stopStream(producerId);
       }
     }
 
@@ -520,7 +540,7 @@ io.on('connection', (socket) => {
 
       producer.on('transportclose', () => {
         console.log(`🚫 Transport fermé pour producer ${producer.id}`);
-        transcriptionFork.stopFork(producer.id);
+        transcription.stopStream(producer.id);
         producer.close();
         peer.producers.delete(producer.id);
       });
@@ -631,7 +651,7 @@ io.on('connection', (socket) => {
 
       const producer = peer.producers.get(producerId);
       if (producer) {
-        transcriptionFork.stopFork(producerId);
+        transcription.stopStream(producerId);
         producer.close();
         peer.producers.delete(producerId);
 
@@ -966,7 +986,7 @@ function cleanupPeer(socket) {
       producerId: producer.id,
       peerId: socket.id,
     });
-    transcriptionFork.stopFork(producer.id);
+    transcription.stopStream(producer.id);
     producer.close();
   });
 
@@ -984,7 +1004,7 @@ function cleanupPeer(socket) {
     // Avant de fermer le router : ffmpeg doit recevoir un SIGTERM pour
     // finaliser l'en-tête de son WAV. Fermer le router d'abord tronquerait le
     // fichier, et le rendrait illisible.
-    transcriptionFork.stopMeetingForks(socket.meetingId);
+    transcription.stopMeetingStreams(socket.meetingId);
 
     room.router.close();
     rooms.delete(socket.meetingId);
