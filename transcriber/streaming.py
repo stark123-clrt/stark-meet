@@ -149,12 +149,22 @@ LLM_RAW_FIRST = os.environ.get("LLM_RAW_FIRST", "true").lower() == "true"
 
 # Part maximale de mots modifiés qu'on accepte d'une correction.
 #
-# ⚠️ Garde-fou indispensable, et pas théorique : sur « ingénieur des logiciels »,
-# qwen2.5:1.5b a rendu « ingénieur des systèmes ». Un petit modèle ne corrige pas,
-# il complète avec ce qui lui semble le plus probable — consigne ou pas. Dans un
-# compte-rendu de réunion, réécrire ce que les gens ont dit est pire que laisser
-# une faute d'orthographe. Au-delà de ce seuil, on publie le texte brut.
-LLM_MAX_CHANGE_RATIO = float(os.environ.get("LLM_MAX_CHANGE_RATIO", "0.34"))
+# Volontairement PERMISSIF. Corriger une erreur phonétique consiste par nature à
+# remplacer un mot — « développée » par « développeur », « gaboné » par
+# « gabonais » —, et c'est même tout l'intérêt d'un LLM ici : il dispose du
+# contexte que le modèle acoustique n'a pas. Un seuil serré bloquait donc
+# exactement ce qu'on cherchait à obtenir (mesuré : une correction sur deux
+# écartée à 0,34).
+#
+# Ce seuil ne sert plus qu'à écarter une réécriture intégrale. Mettre 1.0 le
+# désactive complètement.
+LLM_MAX_CHANGE_RATIO = float(os.environ.get("LLM_MAX_CHANGE_RATIO", "0.7"))
+
+# Écart de longueur toléré, en nombre de mots. C'est LE vrai risque : un modèle
+# qui complète une phrase inachevée ou qui ajoute une formule de politesse
+# invente du contenu que personne n'a dit. Remplacer un mot est une correction ;
+# en ajouter cinq est une fabrication.
+LLM_MAX_LENGTH_RATIO = float(os.environ.get("LLM_MAX_LENGTH_RATIO", "0.35"))
 
 # Corrections en attente au-delà desquelles on cesse d'en demander.
 #
@@ -554,15 +564,28 @@ def _words(text: str) -> list[str]:
 
 def changed_too_much(raw: str, corrected: str) -> bool:
     """
-    Vrai si la correction s'écarte trop du texte d'origine.
+    Vrai si la correction doit être écartée.
+
+    Deux critères, et leur asymétrie est délibérée :
+
+    · la LONGUEUR est surveillée de près. Un modèle qui ajoute des mots invente
+      du contenu — il complète une phrase inachevée, ajoute une formule de
+      politesse. C'est le seul risque vraiment inacceptable dans un compte-rendu.
+
+    · les SUBSTITUTIONS sont largement tolérées. Corriger une erreur phonétique,
+      c'est remplacer un mot ; l'interdire reviendrait à n'attendre du LLM que
+      des accents. Ce second seuil ne sert plus qu'à écarter une réécriture
+      complète, où le modèle aurait manifestement répondu à autre chose.
 
     La comparaison ignore accents, ponctuation et casse — précisément ce que la
-    correction est censée ajouter. Ne reste donc que ce qui compte : les mots
-    a-t-il changés ? Une distance d'édition au mot répond exactement à ça.
+    correction est censée ajouter.
     """
     reference = _words(raw)
     hypothesis = _words(corrected)
     if not reference:
+        return True
+
+    if abs(len(hypothesis) - len(reference)) > max(2, LLM_MAX_LENGTH_RATIO * len(reference)):
         return True
 
     # Levenshtein au mot, sur une seule ligne de travail : les phrases font
@@ -678,6 +701,10 @@ async def send_final(websocket: WebSocket, payload: dict) -> None:
         **payload,
         "text": corrected or raw,
         "corrected": corrected is not None,
+        # Le texte tel qu'entendu, conservé à côté du corrigé. C'est la seule
+        # trace de ce qui a réellement été prononcé : si le LLM se trompe, le
+        # compte-rendu et une relecture pourront toujours revenir à la source.
+        "rawText": raw,
     }))
 
 

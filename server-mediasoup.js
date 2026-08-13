@@ -111,7 +111,7 @@ function transcriptStore(meetingId) {
  * endroit.
  */
 function recordTranscript({
-  meetingId, participantId, displayName, type, text, at, spokenAt, segmentId, corrected,
+  meetingId, participantId, displayName, type, text, at, spokenAt, segmentId, corrected, rawText,
 }) {
   if (!meetingId || !type || typeof text !== 'string') return false;
 
@@ -126,6 +126,9 @@ function recordTranscript({
     // de remplacer la phrase au lieu de l'afficher deux fois.
     segmentId: segmentId || null,
     corrected: !!corrected,
+    // Texte tel qu'entendu, conservé quand le LLM a corrigé. Le compte-rendu
+    // pourra ainsi revenir à la source si une correction s'avère fautive.
+    rawText: rawText || null,
     // Instant de PRONONCIATION, fourni par le transcripteur. Sans lui, l'ordre
     // d'affichage serait celui de l'arrivée : deux locuteurs dont les flux
     // n'avancent pas au même rythme verraient une réponse s'afficher avant sa
