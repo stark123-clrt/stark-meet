@@ -46,7 +46,8 @@ RUN pip install --no-cache-dir \
     onnxruntime \
     sherpa-onnx \
     opuslib \
-    soxr
+    soxr \
+    aiohttp
 
 WORKDIR /app
 COPY transcriber/ ./

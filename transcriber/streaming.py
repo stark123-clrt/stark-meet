@@ -89,6 +89,52 @@ PARTIAL_INTERVAL_S = float(os.environ.get("PARTIAL_INTERVAL_S", "0.25"))
 
 DUMP_WAV_DIR = os.environ.get("DUMP_WAV_DIR", "")
 
+# ── Correction par LLM — architecture à deux vitesses ───────────────────────
+#
+# Vitesse 1 : l'hypothèse part telle qu'entendue, sans aucun traitement.
+# Vitesse 2 : la phrase confirmée est corrigée en tâche de fond pendant que le
+#             transducteur écoute déjà la suivante.
+#
+# ⚠️ La règle absolue est qu'aucun appel au LLM ne doit être attendu sur le
+# chemin de l'audio. Un LLM met plusieurs secondes ; pendant ce temps les paquets
+# RTP s'accumuleraient et le décalage deviendrait irrattrapable.
+
+LLM_ENABLED = os.environ.get("LLM_ENABLED", "false").lower() == "true"
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
+
+# Délai de garde. Au-delà, on publie le texte brut : une panne du correcteur ne
+# doit jamais rendre la transcription muette.
+LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "8.0"))
+
+# Corrections simultanées, toutes sessions confondues. Sans cette borne, trois
+# locuteurs terminant leurs phrases en même temps lanceraient trois générations
+# concurrentes, qui disputeraient leurs cœurs à la reconnaissance elle-même.
+LLM_MAX_CONCURRENT = int(os.environ.get("LLM_MAX_CONCURRENT", "1"))
+
+# Nombre de jetons produits au maximum. Une correction fait la longueur de son
+# entrée ; au-delà, c'est que le modèle a commencé à bavarder malgré la consigne.
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "256"))
+
+LLM_PROMPT = os.environ.get(
+    "LLM_PROMPT",
+    "Tu es un correcteur orthographique et de syntaxe de transcription vocale. "
+    "Corrige les fautes, la ponctuation et les erreurs phonétiques de cette phrase. "
+    "Ne modifie pas le sens. Ne rajoute AUCUN commentaire, aucune introduction, "
+    'renvoie UNIQUEMENT le texte corrigé. Texte : "{raw_text}"',
+)
+
+# Publier le texte brut immédiatement, puis la version corrigée. Désactivé par
+# défaut pour rester conforme à la spécification — mais c'est le comportement que
+# je recommanderais : il garantit que la phrase s'affiche à l'instant où elle se
+# termine, la correction ne faisant que la remplacer ensuite. L'affichage exige
+# alors de remplacer un segment par son `segmentId`.
+LLM_RAW_FIRST = os.environ.get("LLM_RAW_FIRST", "false").lower() == "true"
+
+llm_stats = {"corrected": 0, "failed": 0, "timeouts": 0, "totalSeconds": 0.0}
+_http_session = None
+_llm_semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENT)
+
 
 # ── Dépaquetage RTP ─────────────────────────────────────────────────────────
 
@@ -291,8 +337,15 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
             "producerId": session.producer_id,
             "participantId": session.participant_id,
             "displayName": session.speaker_name,
+            # Instant de prononciation : c'est la clé de tri qui remet les
+            # locuteurs dans l'ordre. Elle est fixée ICI, avant toute correction,
+            # pour qu'un passage par le LLM ne déplace jamais une phrase dans le
+            # fil de la conversation.
             "spokenAt": round(time.time(), 3),
+            "segmentId": f"{session.producer_id}-{session.finals}",
         }
+        # Traversée de frontière : ce code tourne dans un thread, la file est
+        # asyncio. `call_soon_threadsafe` est le seul passage sûr.
         loop.call_soon_threadsafe(results.put_nowait, payload)
 
     def feed(samples: np.ndarray) -> None:
@@ -437,14 +490,121 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
     )
 
 
+# ── Correction par LLM ──────────────────────────────────────────────────────
+
+
+async def correct_text(raw: str) -> str | None:
+    """
+    Fait corriger une phrase par Ollama. Renvoie None si ça échoue.
+
+    Aucune exception ne remonte : le correcteur est un agrément, pas une
+    dépendance. Ollama arrêté, modèle absent, machine saturée — dans tous les
+    cas on doit pouvoir publier le texte brut.
+    """
+    if not raw.strip() or _http_session is None:
+        return None
+
+    import aiohttp  # importé ici : la dépendance n'est requise que si LLM_ENABLED
+
+    started = time.perf_counter()
+    try:
+        async with _llm_semaphore:
+            async with _http_session.post(
+                OLLAMA_URL,
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": LLM_PROMPT.format(raw_text=raw),
+                    "stream": False,
+                    "options": {
+                        # Température nulle : on veut une correction déterministe,
+                        # pas une reformulation créative.
+                        "temperature": 0,
+                        "num_predict": LLM_MAX_TOKENS,
+                    },
+                },
+                timeout=aiohttp.ClientTimeout(total=LLM_TIMEOUT_S),
+            ) as response:
+                if response.status != 200:
+                    llm_stats["failed"] += 1
+                    log.warning("Ollama a répondu %s", response.status)
+                    return None
+                body = await response.json()
+    except asyncio.TimeoutError:
+        llm_stats["timeouts"] += 1
+        log.warning("Correction abandonnée après %.0f s", LLM_TIMEOUT_S)
+        return None
+    except Exception as error:
+        llm_stats["failed"] += 1
+        log.warning("Correction impossible : %s", error)
+        return None
+
+    text = (body.get("response") or "").strip()
+
+    # Garde-fous contre un modèle bavard malgré la consigne. Les guillemets
+    # encadrants sont fréquents, et une réponse démesurée signale une phrase
+    # d'introduction ou un commentaire — auquel cas on préfère le texte brut.
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1].strip()
+    if not text or len(text) > max(80, len(raw) * 3):
+        llm_stats["failed"] += 1
+        return None
+
+    llm_stats["corrected"] += 1
+    llm_stats["totalSeconds"] += time.perf_counter() - started
+    return text
+
+
+async def send_final(websocket: WebSocket, payload: dict) -> None:
+    """
+    Publie une phrase confirmée, corrigée si le LLM y parvient.
+
+    Lancée par `asyncio.create_task` : elle s'exécute pendant que la boucle
+    d'ingestion continue de recevoir des paquets et que le transducteur écoute
+    déjà la phrase suivante.
+    """
+    raw = payload["text"]
+
+    if LLM_RAW_FIRST:
+        # La phrase s'affiche à l'instant où elle se termine ; la correction la
+        # remplacera par son `segmentId`.
+        await websocket.send_text(json.dumps({**payload, "corrected": False}))
+
+    corrected = await correct_text(raw)
+    await websocket.send_text(json.dumps({
+        **payload,
+        "text": corrected or raw,
+        "corrected": corrected is not None,
+    }))
+
+
 # ── API ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="stark-streaming")
 
 
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
+    global _http_session
     load_recognizer()
+
+    if LLM_ENABLED:
+        import aiohttp
+
+        # Une seule session HTTP réutilisée : en créer une par phrase gaspillerait
+        # une poignée de main TCP à chaque correction.
+        _http_session = aiohttp.ClientSession()
+        log.info(
+            "Correcteur actif · %s · %s · %d simultanée(s) · délai %.0f s",
+            OLLAMA_MODEL, OLLAMA_URL, LLM_MAX_CONCURRENT, LLM_TIMEOUT_S,
+        )
+    else:
+        log.info("Correcteur désactivé (LLM_ENABLED=false) — texte brut publié")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    if _http_session is not None:
+        await _http_session.close()
 
 
 @app.websocket("/stream")
@@ -479,10 +639,34 @@ async def stream_endpoint(websocket: WebSocket) -> None:
     thread = threading.Thread(target=worker, args=(session, loop, results), daemon=True)
     thread.start()
 
+    # Les tâches de correction sont retenues ici : une tâche sans référence peut
+    # être ramassée par le collecteur avant d'avoir abouti.
+    corrections: set[asyncio.Task] = set()
+
     async def sender() -> None:
+        """
+        Sortie des résultats. C'est ICI que la correction est lancée, et nulle
+        part ailleurs.
+
+        La détection de fin de phrase a lieu dans le thread de travail, où
+        `asyncio.create_task` lèverait une exception faute de boucle. Le thread
+        dépose donc ses résultats dans cette file, et cette coroutine — seule en
+        contexte async — décide quoi en faire.
+
+        ⚠️ Aucun `await` sur le LLM ici : la correction part en tâche de fond et
+        la boucle repart immédiatement. C'est ce qui garantit que l'ingestion
+        audio ne se suspend jamais.
+        """
         while True:
             payload = await results.get()
-            await websocket.send_text(json.dumps(payload))
+
+            if payload["type"] == "final" and LLM_ENABLED:
+                task = asyncio.create_task(send_final(websocket, payload))
+                corrections.add(task)
+                task.add_done_callback(corrections.discard)
+            else:
+                # Hypothèses : publiées telles quelles, sans jamais attendre.
+                await websocket.send_text(json.dumps(payload))
 
     sender_task = asyncio.create_task(sender())
 
@@ -508,6 +692,12 @@ async def stream_endpoint(websocket: WebSocket) -> None:
         session.stop.set()
         session.packets.put(None)
         await asyncio.sleep(0.3)  # laisser la dernière phrase remonter
+
+        # Attendre les corrections en vol : les abandonner ferait perdre les
+        # dernières phrases de la réunion, celles-là même qu'on vient d'attendre.
+        if corrections:
+            await asyncio.wait(corrections, timeout=LLM_TIMEOUT_S + 2)
+
         sender_task.cancel()
         SESSIONS.pop(session.producer_id, None)
 
@@ -521,6 +711,15 @@ async def health() -> dict:
         "threads": NUM_THREADS,
         "decoding": DECODING,
         "activeSessions": len(SESSIONS),
+        "llm": {
+            "enabled": LLM_ENABLED,
+            "model": OLLAMA_MODEL if LLM_ENABLED else None,
+            "rawFirst": LLM_RAW_FIRST,
+            **llm_stats,
+            "averageSeconds": round(
+                llm_stats["totalSeconds"] / llm_stats["corrected"], 2
+            ) if llm_stats["corrected"] else 0,
+        },
         "sessions": [
             {
                 "speaker": s.speaker_name,
