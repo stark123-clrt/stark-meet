@@ -338,6 +338,12 @@ class Session:
     lost_frames: int = 0
     reordered: int = 0
     decode_errors: int = 0
+    # Cumuls du rééchantillonnage. Seul le rapport SUR LA DURÉE a un sens : un
+    # rééchantillonneur à état retient une latence de filtre au démarrage et
+    # produit par à-coups, si bien qu'une trame isolée peut rendre 0 ou 490
+    # échantillons sans que rien ne soit anormal.
+    resample_in: int = 0
+    resample_out: int = 0
     audio_seconds: float = 0.0
     compute_seconds: float = 0.0
     finals: int = 0
@@ -478,11 +484,8 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
                 wav = None
 
         resampled = resampler.resample_chunk(pcm)
-        # Instrumentation temporaire : vérifier que soxr rééchantillonne bien.
-        # Attendu 960 → 320. Un rapport de 1 signifierait qu'on envoie du 48 kHz
-        # étiqueté 16 kHz au modèle, donc de l'audio trois fois trop rapide.
-        if session.decoded_frames <= 5:
-            log.info("RESAMPLE in=%d out=%d", len(pcm), len(resampled))
+        session.resample_in += len(pcm)
+        session.resample_out += len(resampled)
         if len(resampled):
             feed(np.ascontiguousarray(resampled, dtype=np.float32))
 
@@ -902,6 +905,13 @@ async def health() -> dict:
                 # Un compteur qui grimpe alors que les paquets arrivent signale
                 # un découpage d'en-tête RTP erroné.
                 "decodeErrors": s.decode_errors,
+                # LE chiffre décisif : doit valoir 3.000 sur la durée. Une valeur
+                # proche de 2 signifierait que le modèle reçoit un signal 1,5 fois
+                # trop long, donc de la parole ralentie ; proche de 1, du 48 kHz
+                # étiqueté 16 kHz.
+                "resampleRatio": round(s.resample_in / s.resample_out, 3) if s.resample_out else None,
+                "resampleIn": s.resample_in,
+                "resampleOut": s.resample_out,
                 "audioSeconds": round(s.audio_seconds, 1),
                 "rtf": round(s.rtf, 3),
                 "finals": s.finals,
