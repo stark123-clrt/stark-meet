@@ -52,7 +52,25 @@ log = logging.getLogger("streaming")
 
 MODEL_DIR = os.environ.get("SHERPA_MODEL_DIR", "/models/sherpa-fr")
 NUM_THREADS = int(os.environ.get("SHERPA_THREADS", "2"))
-DECODING = os.environ.get("SHERPA_DECODING", "greedy_search")
+
+# Recherche par faisceau plutôt que glouton.
+#
+# Le décodage glouton retient le meilleur jeton à chaque pas et ne revient
+# jamais dessus : une erreur au début d'un mot entraîne tout le reste. Observé
+# en production — « en visioconférence » rendu « envie aux conférences », « il
+# fait beau ce matin » rendu « il fait beaucier matin ». Le faisceau garde
+# plusieurs hypothèses en parallèle et tranche plus tard, ce qui rattrape
+# exactement ce type de dérive.
+#
+# ⚠️ C'est aussi la SEULE méthode qui accepte le biaisage contextuel : les mots
+# prioritaires ci-dessous sont ignorés en décodage glouton.
+DECODING = os.environ.get("SHERPA_DECODING", "modified_beam_search")
+MAX_ACTIVE_PATHS = int(os.environ.get("SHERPA_BEAM", "4"))
+
+# Biaisage contextuel. Le score pousse le décodeur vers ces mots sans les
+# imposer ; trop haut, il les ferait apparaître là où personne ne les a dits.
+HOTWORDS_SCORE = float(os.environ.get("HOTWORDS_SCORE", "1.5"))
+HOTWORDS_EXTRA = os.environ.get("HOTWORDS", "")
 
 # Endpointing du transducteur. Ces trois règles remplacent le seuil de silence
 # du VAD : la première clôt sur un long silence, la deuxième sur un silence plus
@@ -280,12 +298,48 @@ def load_recognizer():
         sample_rate=TARGET_RATE,
         feature_dim=80,
         decoding_method=DECODING,
+        max_active_paths=MAX_ACTIVE_PATHS,
+        hotwords_score=HOTWORDS_SCORE,
         enable_endpoint_detection=True,
         rule1_min_trailing_silence=RULE1_SILENCE,
         rule2_min_trailing_silence=RULE2_SILENCE,
         rule3_min_utterance_length=RULE3_MAX_FRAMES,
     )
-    log.info("Modèle chargé · %s · %d threads · %s", directory, NUM_THREADS, DECODING)
+    log.info(
+        "Modèle chargé · %s · %d threads · %s · faisceau %d",
+        directory, NUM_THREADS, DECODING, MAX_ACTIVE_PATHS,
+    )
+
+
+_hotwords_warned = False
+
+
+def make_stream(speaker_name: str):
+    """
+    Crée le flux de reconnaissance, en y injectant les mots prioritaires.
+
+    Le nom du locuteur est celui que le modèle écorche le plus : il est prononcé
+    souvent et n'appartient pas au vocabulaire courant. On le connaît dès
+    l'ouverture du flux, autant s'en servir — c'est gratuit et ça ne demande
+    aucun réentraînement.
+
+    L'API des mots prioritaires varie selon les versions de sherpa-onnx, d'où le
+    repli sur un flux ordinaire plutôt qu'un échec de session.
+    """
+    global _hotwords_warned
+
+    words = [w for w in [speaker_name, HOTWORDS_EXTRA] if w and w.strip()]
+    if not words or DECODING != "modified_beam_search":
+        return RECOGNIZER.create_stream()
+
+    hotwords = "\n".join(w.strip().upper() for w in words)
+    try:
+        return RECOGNIZER.create_stream(hotwords=hotwords)
+    except Exception as error:
+        if not _hotwords_warned:
+            _hotwords_warned = True
+            log.warning("Mots prioritaires non pris en charge par cette version : %s", error)
+        return RECOGNIZER.create_stream()
 
 
 def prettify(text: str, sentence: bool = False) -> str:
@@ -376,7 +430,7 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
     # introduirait une discontinuité à chaque frontière de trame.
     resampler = soxr.ResampleStream(OPUS_RATE, TARGET_RATE, 1, dtype="float32")
 
-    stream = RECOGNIZER.create_stream()
+    stream = make_stream(session.speaker_name)
     pending: dict[int, tuple[int, bytes]] = {}
     expected_seq: int | None = None
     last_ts: int | None = None
@@ -884,6 +938,8 @@ async def health() -> dict:
         "model": MODEL_DIR,
         "threads": NUM_THREADS,
         "decoding": DECODING,
+        "maxActivePaths": MAX_ACTIVE_PATHS,
+        "hotwordsScore": HOTWORDS_SCORE,
         "activeSessions": len(SESSIONS),
         "llm": {
             "enabled": LLM_ENABLED,
