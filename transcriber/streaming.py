@@ -57,8 +57,12 @@ DECODING = os.environ.get("SHERPA_DECODING", "greedy_search")
 # Endpointing du transducteur. Ces trois règles remplacent le seuil de silence
 # du VAD : la première clôt sur un long silence, la deuxième sur un silence plus
 # court APRÈS avoir décodé quelque chose, la troisième borne les monologues.
-RULE1_SILENCE = float(os.environ.get("SHERPA_RULE1", "2.4"))
-RULE2_SILENCE = float(os.environ.get("SHERPA_RULE2", "1.0"))
+#
+# Abaissées après observation : à 1,0 s, deux phrases séparées par une pause
+# courte étaient fusionnées en une seule — « il fait beau ce matin et je vais
+# travailler sur mon projet les réunions en visioconférence ».
+RULE1_SILENCE = float(os.environ.get("SHERPA_RULE1", "1.8"))
+RULE2_SILENCE = float(os.environ.get("SHERPA_RULE2", "0.6"))
 RULE3_MAX_FRAMES = int(os.environ.get("SHERPA_RULE3", "300"))
 
 OPUS_RATE = 48000
@@ -370,6 +374,9 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
     pending: dict[int, tuple[int, bytes]] = {}
     expected_seq: int | None = None
     last_ts: int | None = None
+    # Durée de la dernière trame réellement décodée. Sert à dimensionner la
+    # dissimulation de perte : voir decode_frame.
+    last_frame_samples = FRAME_SAMPLES_20MS
     last_text = ""
     last_sent = 0.0
 
@@ -435,16 +442,22 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
 
     def decode_frame(payload: bytes | None) -> None:
         """Décode une trame, ou la reconstruit si elle est perdue."""
-        nonlocal wav
+        nonlocal wav, last_frame_samples
         try:
             if payload is None:
-                # Dissimulation de perte : libopus interpole à partir de son
-                # état interne, ce qui vaut bien mieux qu'un blanc net.
-                raw = decoder.decode(None, MAX_FRAME_SAMPLES, decode_fec=False)
+                # ⚠️ Dissimulation de perte : ici `frame_size` n'est PAS une
+                # capacité mais la longueur RÉELLEMENT produite. Passer
+                # MAX_FRAME_SAMPLES fabriquait 120 ms d'audio pour combler une
+                # trame de 20 ms — six fois trop, injecté à chaque paquet perdu.
+                # On reproduit donc la durée de la dernière trame connue.
+                raw = decoder.decode(None, last_frame_samples, decode_fec=False)
                 session.lost_frames += 1
             else:
+                # Avec une charge utile, `frame_size` est bien une capacité :
+                # libopus ne renvoie que ce qu'il a décodé.
                 raw = decoder.decode(payload, MAX_FRAME_SAMPLES)
                 session.decoded_frames += 1
+                last_frame_samples = len(raw) // 2  # 16 bits, mono
         except Exception as error:
             session.decode_errors += 1
             # Journalisation à débit limité : sur un défaut systématique — un
@@ -465,6 +478,11 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
                 wav = None
 
         resampled = resampler.resample_chunk(pcm)
+        # Instrumentation temporaire : vérifier que soxr rééchantillonne bien.
+        # Attendu 960 → 320. Un rapport de 1 signifierait qu'on envoie du 48 kHz
+        # étiqueté 16 kHz au modèle, donc de l'audio trois fois trop rapide.
+        if session.decoded_frames <= 5:
+            log.info("RESAMPLE in=%d out=%d", len(pcm), len(resampled))
         if len(resampled):
             feed(np.ascontiguousarray(resampled, dtype=np.float32))
 
@@ -484,6 +502,12 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
                 insert_silence(gap / OPUS_RATE)
         if payload is not None:
             last_ts = timestamp
+        elif last_ts is not None:
+            # ⚠️ L'horloge doit avancer même sur une trame perdue. Sans ça, le
+            # paquet suivant croit qu'il manque du temps et insert_silence en
+            # rajoute — alors que la dissimulation vient déjà de produire cet
+            # audio. Le flux se dilatait donc à chaque perte.
+            last_ts = (last_ts + FRAME_SAMPLES_20MS) & 0xFFFFFFFF
         decode_frame(payload)
 
     while not session.stop.is_set():
