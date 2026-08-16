@@ -110,6 +110,33 @@ REORDER_WINDOW = int(os.environ.get("REORDER_WINDOW", "3"))
 # l'horloge murale à la publication, pas sur le compte d'échantillons.
 MAX_GAP_S = float(os.environ.get("MAX_GAP_S", "0.5"))
 
+# ── Porte de voix ───────────────────────────────────────────────────────────
+#
+# Le modèle produit du texte sur le souffle du micro et le bruit de fond — il a
+# été affiné sur des corpus où quelqu'un parle en permanence, et n'a donc jamais
+# appris à ne rien émettre.
+#
+# ⚠️ RÈGLE ESSENTIELLE : la porte filtre la PUBLICATION, jamais l'alimentation.
+# Le flux sherpa-onnx doit continuer de recevoir tout l'audio, silence compris :
+# c'est ce silence qui déclenche son endpointing. Cesser de le nourrir
+# supprimerait toute phrase confirmée.
+#
+# Silero plutôt qu'un seuil d'énergie : un ventilateur dépasse un seuil fixe
+# qu'une voix faible ne franchit pas. Silero distingue la parole du bruit, pas le
+# fort du faible, et ne demande donc pas de réglage par pièce ni par micro.
+VAD_ENABLED = os.environ.get("VAD_ENABLED", "true").lower() == "true"
+VAD_MODEL = os.environ.get("VAD_MODEL", "/models/silero_vad.onnx")
+VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.5"))
+
+# Durée pendant laquelle on continue de publier après la dernière parole
+# détectée. Les derniers mots d'une phrase arrivent souvent après que la
+# personne s'est tue : une fenêtre trop courte les couperait.
+VAD_HOLD_S = float(os.environ.get("VAD_HOLD_S", "2.5"))
+
+# Silero v5 à 16 kHz travaille par fenêtres de 512 échantillons, soit 32 ms. On
+# accumule donc avant de l'appeler.
+VAD_WINDOW = 512
+
 # Mots minimum pour qu'une phrase soit publiée.
 #
 # Les hallucinations sortent en un ou deux mots isolés — « Tout », « La »,
@@ -328,6 +355,40 @@ def load_recognizer():
     )
 
 
+_vad_warned = False
+
+
+def make_vad():
+    """
+    Détecteur de voix Silero, ou None s'il est indisponible.
+
+    Le repli est délibéré : un fichier de modèle manquant ne doit pas empêcher
+    de transcrire. Sans porte, on retombe simplement sur le comportement
+    précédent — du texte parasite, mais du texte.
+    """
+    global _vad_warned
+    if not VAD_ENABLED:
+        return None
+
+    try:
+        import sherpa_onnx
+
+        config = sherpa_onnx.VadModelConfig()
+        config.silero_vad.model = VAD_MODEL
+        config.silero_vad.threshold = VAD_THRESHOLD
+        config.silero_vad.min_silence_duration = 0.25
+        config.sample_rate = TARGET_RATE
+        return sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=10)
+    except Exception as error:
+        if not _vad_warned:
+            _vad_warned = True
+            log.warning(
+                "Porte de voix désactivée (%s introuvable ou illisible) : %s",
+                VAD_MODEL, error,
+            )
+        return None
+
+
 _hotwords_warned = False
 
 
@@ -416,6 +477,7 @@ class Session:
     resample_in: int = 0
     resample_out: int = 0
     suppressed: int = 0
+    vad_suppressed: int = 0
     audio_seconds: float = 0.0
     compute_seconds: float = 0.0
     finals: int = 0
@@ -458,6 +520,12 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
     last_text = ""
     last_sent = 0.0
 
+    # Porte de voix. `vad_buffer` accumule jusqu'à la fenêtre attendue par
+    # Silero ; `last_speech` retient l'instant de la dernière parole détectée.
+    vad = make_vad()
+    vad_buffer = np.zeros(0, dtype=np.float32)
+    last_speech = 0.0
+
     wav = None
     if DUMP_WAV_DIR:
         try:
@@ -474,7 +542,19 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
         except Exception as error:
             log.warning("Capture impossible · %s: %s", session.speaker_name, error)
 
+    def voice_recently() -> bool:
+        """Vrai si de la parole a été détectée dans la fenêtre de rétention."""
+        if vad is None:
+            return True  # sans détecteur, on ne retient rien
+        return (time.monotonic() - last_speech) <= VAD_HOLD_S
+
     def publish(kind: str, text: str) -> None:
+        # ⚠️ Seule la publication est filtrée. Le modèle a déjà reçu cet audio et
+        # continuera d'en recevoir : son endpointing reste intact.
+        if not voice_recently():
+            session.vad_suppressed += 1
+            return
+
         payload = {
             "type": kind,
             "text": prettify(text),
@@ -492,9 +572,33 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
         # asyncio. `call_soon_threadsafe` est le seul passage sûr.
         loop.call_soon_threadsafe(results.put_nowait, payload)
 
+    def watch_voice(samples: np.ndarray) -> None:
+        """Alimente le détecteur de voix, par fenêtres de la taille attendue."""
+        nonlocal vad_buffer, last_speech
+        if vad is None:
+            return
+        try:
+            vad_buffer = np.concatenate([vad_buffer, samples])
+            while len(vad_buffer) >= VAD_WINDOW:
+                vad.accept_waveform(vad_buffer[:VAD_WINDOW])
+                vad_buffer = vad_buffer[VAD_WINDOW:]
+            if vad.is_speech_detected():
+                last_speech = time.monotonic()
+        except Exception as error:
+            log.warning("Porte de voix en erreur, désactivée · %s: %s",
+                        session.speaker_name, error)
+            _disable_vad()
+
+    def _disable_vad() -> None:
+        nonlocal vad
+        vad = None
+
     def feed(samples: np.ndarray) -> None:
         """Injecte du PCM 16 kHz dans le moteur et récolte ce qui en sort."""
         nonlocal last_text, last_sent
+
+        # Le détecteur observe le même audio, en parallèle et sans le retenir.
+        watch_voice(samples)
 
         started = time.perf_counter()
         stream.accept_waveform(TARGET_RATE, samples)
@@ -969,6 +1073,12 @@ async def health() -> dict:
         "decoding": DECODING,
         "maxActivePaths": MAX_ACTIVE_PATHS,
         "hotwordsScore": HOTWORDS_SCORE,
+        "vad": {
+            "enabled": VAD_ENABLED,
+            "model": VAD_MODEL,
+            "threshold": VAD_THRESHOLD,
+            "holdSeconds": VAD_HOLD_S,
+        },
         "activeSessions": len(SESSIONS),
         "llm": {
             "enabled": LLM_ENABLED,
@@ -1003,6 +1113,10 @@ async def health() -> dict:
                 # Segments écartés parce que trop courts. Un chiffre du même
                 # ordre que `finals` signalerait un seuil trop haut.
                 "suppressed": s.suppressed,
+                # Sorties retenues faute de voix détectée. À comparer à `finals` :
+                # si les deux montent au même rythme, le seuil Silero coupe de la
+                # vraie parole et il faut le baisser.
+                "vadSuppressed": s.vad_suppressed,
                 "queued": s.packets.qsize(),
             }
             for s in SESSIONS.values()
