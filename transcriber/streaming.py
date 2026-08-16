@@ -98,10 +98,27 @@ FRAME_SAMPLES_20MS = 960
 # le tri doit se faire.
 REORDER_WINDOW = int(os.environ.get("REORDER_WINDOW", "3"))
 
-# Silence maximal reconstruit d'un coup. Au-delà, on considère que le locuteur
-# s'est tu longuement (DTX ou micro coupé) et on repart proprement plutôt que
-# d'injecter des minutes de zéros dans le modèle.
-MAX_GAP_S = float(os.environ.get("MAX_GAP_S", "2.0"))
+# Silence reconstruit au maximum d'un coup. Au-delà, on n'injecte RIEN.
+#
+# ⚠️ Un transducteur nourri de zéros finit par émettre des jetons sans signal —
+# observé en production : entre deux prises de parole, le modèle affiné sur
+# VoxPopuli régurgitait son vocabulaire d'entraînement (« la proposition de la
+# France », « un mois de continisations »). Combler un micro-trou de gigue reste
+# utile ; combler deux secondes de silence fabrique des hallucinations.
+#
+# Ne pas combler ne dérègle pas l'ordre d'affichage : `spokenAt` est pris sur
+# l'horloge murale à la publication, pas sur le compte d'échantillons.
+MAX_GAP_S = float(os.environ.get("MAX_GAP_S", "0.5"))
+
+# Mots minimum pour qu'une phrase soit publiée.
+#
+# Les hallucinations sortent en un ou deux mots isolés — « Tout », « La »,
+# « Madame », « Dans ». Ce filtre les élimine d'un coup.
+#
+# ⚠️ Il a un coût réel : « Oui », « D'accord », « Merci », « Exactement » sont
+# des réponses légitimes en réunion, et ce seuil les supprime aussi. Le mettre à
+# 1 le désactive.
+MIN_FINAL_WORDS = int(os.environ.get("MIN_FINAL_WORDS", "3"))
 
 # Cadence maximale d'émission des hypothèses. `get_result` renvoie le texte
 # complet du segment en cours à CHAQUE trame : sans limitation, on enverrait
@@ -398,6 +415,7 @@ class Session:
     # échantillons sans que rien ne soit anormal.
     resample_in: int = 0
     resample_out: int = 0
+    suppressed: int = 0
     audio_seconds: float = 0.0
     compute_seconds: float = 0.0
     finals: int = 0
@@ -489,9 +507,15 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
 
         now = time.monotonic()
         if endpoint:
-            if text.strip():
+            words = text.split()
+            if len(words) >= MIN_FINAL_WORDS:
                 session.finals += 1
                 publish("final", text)
+            elif words:
+                # Compté plutôt que jeté en silence : si ce nombre explose, c'est
+                # que le seuil supprime de vraies réponses courtes et non des
+                # hallucinations.
+                session.suppressed += 1
             RECOGNIZER.reset(stream)
             last_text = ""
             last_sent = now
@@ -544,10 +568,15 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
             feed(np.ascontiguousarray(resampled, dtype=np.float32))
 
     def insert_silence(seconds: float) -> None:
-        """Comble un trou temporel, pour que l'audio ne se comprime pas."""
-        if seconds <= 0:
+        """
+        Comble un micro-trou de gigue — et seulement lui.
+
+        Au-delà de MAX_GAP_S on n'injecte rien : nourrir le modèle de silence
+        prolongé le fait halluciner, et c'est ce qui produisait du texte alors
+        que personne ne parlait.
+        """
+        if seconds <= 0 or seconds > MAX_GAP_S:
             return
-        seconds = min(seconds, MAX_GAP_S)
         feed(np.zeros(int(seconds * TARGET_RATE), dtype=np.float32))
 
     def process(sequence: int, timestamp: int, payload: bytes | None) -> None:
@@ -971,6 +1000,9 @@ async def health() -> dict:
                 "audioSeconds": round(s.audio_seconds, 1),
                 "rtf": round(s.rtf, 3),
                 "finals": s.finals,
+                # Segments écartés parce que trop courts. Un chiffre du même
+                # ordre que `finals` signalerait un seuil trop haut.
+                "suppressed": s.suppressed,
                 "queued": s.packets.qsize(),
             }
             for s in SESSIONS.values()
