@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -oE '\\\\-\\\\-[a-z0-9-]+ *: *[^;]{1,40};')",
+      "Bash(grep -oE '\\\\-\\\\-[a-z0-9-]+ *: *[^;]{1,50};')",
+      "Bash(grep -nE '#[0-9a-fA-F]{3,8}' app/globals.css)"
+    ]
+  }
+}

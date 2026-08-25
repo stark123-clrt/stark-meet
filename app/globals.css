@@ -2,15 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Thème clair du template : fond #FAFAFA, texte quasi noir — jamais du noir
-   pur, conformément au système de design. La page réunion pose son propre fond
-   (canvas #F1F2F6), plus soutenu. */
+/* Thème clair du template Bantec : fond légèrement bleuté et texte bleu nuit,
+   jamais du noir. La page réunion pose son propre fond (canvas), plus soutenu. */
 html,
 body {
   height: 100%;
   margin: 0;
-  background: #fafafa;
-  color: #0a0a0a;
+  background: #f4f7fb;
+  color: #051634;
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -22,7 +21,7 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d7d7de;
+  background: #cfd8e6;
   border-radius: 999px;
 }
 
@@ -43,7 +42,7 @@ body {
 
 /* Trame de points du haut de la landing, atténuée en ellipse vers les bords. */
 .hero-dots {
-  background-image: radial-gradient(#e8e8ec 1px, transparent 1px);
+  background-image: radial-gradient(#dbe3ef 1px, transparent 1px);
   background-size: 18px 18px;
   -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000 40%, transparent 100%);
   mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000 40%, transparent 100%);

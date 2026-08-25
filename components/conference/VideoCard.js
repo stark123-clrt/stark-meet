@@ -212,7 +212,7 @@ export default function VideoCard({
       }`}
       style={{
         outline: !isStage
-          ? `2px solid ${isActiveSpeaker ? '#1A6DFF' : 'rgba(255,255,255,0.10)'}`
+          ? `2px solid ${isActiveSpeaker ? '#0E59F2' : 'rgba(255,255,255,0.10)'}`
           : undefined,
         outlineOffset: !isStage ? '-2px' : undefined,
       }}

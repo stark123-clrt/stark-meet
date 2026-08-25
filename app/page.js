@@ -262,7 +262,7 @@ export default function LandingPage() {
 
       {/* ---- Aperçu de l'application ---- */}
       <section className="max-w-[1280px] mx-auto px-6 pb-20">
-        <div className="relative border border-slate-200 rounded-lg overflow-hidden bg-[#15161A] h-[360px] sm:h-[460px] lg:h-[520px]">
+        <div className="relative border border-slate-200 rounded-lg overflow-hidden bg-stage h-[360px] sm:h-[460px] lg:h-[520px]">
           <AppPreview />
         </div>
       </section>
