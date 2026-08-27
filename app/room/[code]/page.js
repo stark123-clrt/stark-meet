@@ -485,7 +485,7 @@ export default function RoomPage() {
             </div>
             <button
               type="submit"
-              className="w-full h-11 rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition-colors"
+              className="w-full h-12 sm:h-11 rounded-md sm:rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition-colors"
             >
               Continuer
             </button>

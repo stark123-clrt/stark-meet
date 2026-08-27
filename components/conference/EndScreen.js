@@ -59,16 +59,21 @@ export default function EndScreen({ meeting, stats, isHost, stillRunning, endsAt
           <Stat icon={MessagesSquare} label="Messages" value={stats?.messages ?? '—'} />
         </div>
 
+        {/* Plus hauts et plus arrondis tant qu'ils sont empiles pleine largeur :
+            un bouton de 44 px sur 350 px de large se lit comme une barre plate,
+            et son arrondi de 6 px — calibre pour un bouton de 140 px — disparait
+            a cette echelle. Des que l'ecran les met cote a cote, on revient
+            exactement aux jetons du design. */}
         <div className="mt-8 flex flex-col sm:flex-row gap-3">
           <button
             onClick={onRejoin}
-            className="flex-1 h-11 rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition-colors"
+            className="flex-1 h-12 sm:h-11 rounded-md sm:rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition-colors"
           >
             {stillRunning ? 'Revenir dans la réunion' : 'Rejoindre à nouveau'}
           </button>
           <Link
             href={isHost ? '/dashboard' : '/'}
-            className="flex-1 h-11 flex items-center justify-center rounded-sm border border-slate-200 bg-surface text-[15px] font-medium text-slate-950 hover:bg-slate-100 transition-colors"
+            className="flex-1 h-12 sm:h-11 flex items-center justify-center rounded-md sm:rounded-sm border border-slate-200 bg-surface text-[15px] font-medium text-slate-950 hover:bg-slate-100 transition-colors"
           >
             {isHost ? 'Retour à mon espace' : 'Retour à l\'accueil'}
           </Link>

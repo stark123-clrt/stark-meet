@@ -179,7 +179,7 @@ export default function Lobby({
               <button
                 onClick={onJoin}
                 disabled={joining}
-                className="w-full h-12 rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 hover:shadow-brand-glow transition duration-200 ease-standard disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
+                className="w-full h-12 rounded-md sm:rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 hover:shadow-brand-glow transition duration-200 ease-standard disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
               >
                 {joining ? 'Connexion…' : 'Rejoindre maintenant'}
               </button>
