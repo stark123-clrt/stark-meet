@@ -93,6 +93,8 @@ export default function VideoGrid({
   ]);
 
   const [pinnedId, setPinnedId] = useState(null);
+  // Vue interlocuteur : qui occupe le grand cadre, l'autre ou moi.
+  const [duoSwapped, setDuoSwapped] = useState(false);
 
   const sharingTile = tiles.find((t) => t.isScreenShare) || null;
 
@@ -198,10 +200,62 @@ export default function VideoGrid({
     );
   }
 
+  // ---- Vue interlocuteur : deux participants sur un écran en portrait ----
+  // À deux, une grille égalitaire n'a aucune valeur : on sait déjà à quoi on
+  // ressemble. Toute la surface doit servir à voir l'autre — c'est ce que font
+  // Meet, Zoom, WhatsApp et FaceTime sur téléphone, sans exception. Sur un
+  // écran large en revanche, deux tuiles côte à côte remplissent déjà bien
+  // l'espace : la grille y reste meilleure.
+  const isPortrait = gridSize.height > 0 && gridSize.height > gridSize.width;
+  const localTile = tiles.find((t) => t.isLocal) || null;
+  const remoteTile = tiles.find((t) => !t.isLocal) || null;
+  const duoMode = isPortrait && tiles.length === 2 && !!localTile && !!remoteTile;
+
+  const duoMain = duoSwapped ? localTile : remoteTile;
+  const duoPip = duoSwapped ? remoteTile : localTile;
+
   // ---- Mode grille égalitaire ----
   return (
     <div className="flex-1 flex flex-col min-h-0 p-3 sm:p-5">
       <div ref={gridRef} className="flex-1 min-h-0 flex items-center justify-center">
+        {duoMode ? (
+          <div className="relative w-full h-full">
+            <VideoCard
+              variant="grid"
+              participant={duoMain.participant}
+              stream={duoMain.stream}
+              isLocal={duoMain.isLocal}
+              videoEnabled={duoMain.videoEnabled}
+              micEnabled={duoMain.micEnabled}
+              handRaised={duoMain.handRaised}
+              isScreenShare={duoMain.isScreenShare}
+              audioOutputId={audioOutputId}
+            />
+
+            {/* Vignette flottante, comme dans toutes les applications d'appel.
+                Un appui permute les deux vues : c'est le seul geste attendu ici,
+                et il évite d'avoir à la déplacer. */}
+            <button
+              onClick={() => setDuoSwapped((swapped) => !swapped)}
+              aria-label="Permuter les vues"
+              title="Permuter les vues"
+              className="absolute bottom-3 right-3 z-30 w-[30%] max-w-[132px] aspect-[3/4] rounded-lg overflow-hidden shadow-overlay ring-2 ring-white/70"
+            >
+              <VideoCard
+                variant="grid"
+                participant={duoPip.participant}
+                stream={duoPip.stream}
+                isLocal={duoPip.isLocal}
+                videoEnabled={duoPip.videoEnabled}
+                micEnabled={duoPip.micEnabled}
+                handRaised={duoPip.handRaised}
+                isScreenShare={duoPip.isScreenShare}
+                audioOutputId={audioOutputId}
+              />
+            </button>
+          </div>
+        ) : (
+        <>
         {/* Repli en grille CSS tant que le conteneur n'est pas mesuré (premier
             rendu, ou navigateur sans ResizeObserver). Sans lui, un échec de
             mesure ne donnerait aucune tuile — donc ni image ni son, puisque
@@ -230,12 +284,18 @@ export default function VideoGrid({
                 tile={tile}
                 variant="grid"
                 isPinned={false}
+                // En dessous de trois tuiles, epingler ne sert a rien : il n'y a
+                // personne d'autre a regarder. La punaise, desormais visible en
+                // permanence au doigt, ne serait que du bruit sur l'image.
+                showPin={tiles.length > 2}
                 audioOutputId={audioOutputId}
                 onTogglePin={() => togglePin(tile.tileId)}
               />
             </div>
           ))}
         </div>
+        </>
+        )}
       </div>
 
       {tiles.length === 1 && (
@@ -253,7 +313,7 @@ export default function VideoGrid({
  * VideoCard : celui-ci se contente d'afficher un participant, la disposition
  * et les interactions qui la modifient restent l'affaire de VideoGrid.
  */
-function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, audioOutputId, onTogglePin }) {
+function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, showPin = true, audioOutputId, onTogglePin }) {
   return (
     // La vignette se dimensionne d'elle-même (largeur fixe + format) ; la
     // tuile de grille, elle, remplit la boîte calculée par le parent.
@@ -271,6 +331,7 @@ function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, audioOutp
         audioOutputId={audioOutputId}
       />
 
+      {showPin && (
       <button
         onClick={onTogglePin}
         title={isPinned ? 'Détacher' : 'Épingler en grand'}
@@ -288,6 +349,7 @@ function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, audioOutp
       >
         {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
       </button>
+      )}
     </div>
   );
 }
