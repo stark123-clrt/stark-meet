@@ -80,10 +80,6 @@ export default function ConferenceView({
   // faire dans l'etat du hook.
   const [notice, setNotice] = useState('');
 
-  // L'ecran ne doit pas s'eteindre pendant qu'on ecoute : sans ca, un telephone
-  // se verrouille au bout de trente secondes, coupe la camera et met la page en
-  // veille — c'est-a-dire pendant l'essentiel d'une reunion.
-  useWakeLock(isConnected);
   const [elapsed, setElapsed] = useState(0);
   const joinedAtRef = useRef(null);
 
@@ -99,6 +95,14 @@ export default function ConferenceView({
     leaveMeeting, toggleMic, setMicEnabled, toggleVideo, toggleHand,
     startScreenShare, stopScreenShare,
   } = media;
+
+  // Déclaré APRÈS la déstructuration : `isConnected` en vient, et une `const`
+  // lue avant sa déclaration lève une ReferenceError qui casse toute la page.
+  //
+  // L'écran ne doit pas s'éteindre pendant qu'on écoute — sans ça un téléphone
+  // se verrouille au bout de trente secondes, coupe la caméra et met la page en
+  // veille, c'est-à-dire pendant l'essentiel d'une réunion.
+  useWakeLock(isConnected);
 
   useEffect(() => {
     if (isConnected && !joinedAtRef.current) joinedAtRef.current = Date.now();
