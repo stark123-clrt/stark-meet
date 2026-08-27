@@ -806,6 +806,40 @@ io.on('connection', (socket) => {
     socket.to(socket.meetingId).emit('peer-screen-share', { peerId: socket.id, sharing: !!sharing });
   });
 
+  /**
+   * Inventaire des flux de la salle, hors les siens.
+   *
+   * Filet de securite pour le client : une consommation qui echoue le laissait
+   * sans tuile pour ce participant jusqu'a la fin de la reunion, puisque
+   * `new-producer` n'est emis qu'une fois. Le client compare periodiquement cet
+   * inventaire a ce qu'il a reellement recu et redemande la difference.
+   */
+  socket.on('list-producers', (callback) => {
+    if (typeof callback !== 'function') return;
+
+    const room = socket.meetingId && rooms.get(socket.meetingId);
+    if (!room) {
+      callback({ success: false, error: 'Salle inconnue' });
+      return;
+    }
+
+    const producers = [];
+    for (const [peerId, peer] of room.peers) {
+      if (peerId === socket.id) continue;
+      for (const producer of peer.producers.values()) {
+        producers.push({
+          producerId: producer.id,
+          peerId,
+          peerName: peer.userName,
+          kind: producer.kind,
+          paused: producer.paused,
+        });
+      }
+    }
+
+    callback({ success: true, producers });
+  });
+
   // Quitter volontairement la salle (l'utilisateur clique "Quitter", ou est
   // exclu par l'hôte côté application) sans fermer la connexion Socket.io —
   // permet au client de revenir à l'écran de salle d'attente proprement.

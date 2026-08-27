@@ -19,6 +19,20 @@ const AUDIO_CONSTRAINTS = {
   autoGainControl: true,
 };
 
+// Une consommation de flux qui echoue etait definitivement perdue : le
+// participant restait invisible pour toute la reunion. Trois tentatives
+// couvrent les echecs passagers (aller-retour reseau perdu, transport pas
+// encore pret, bascule 4G/Wi-Fi d'un telephone).
+const CONSUME_ATTEMPTS = 3;
+const CONSUME_RETRY_MS = 600;
+
+// Filet de securite : meme avec les tentatives, un flux peut manquer a
+// l'appel. On compare periodiquement ce que le serveur heberge a ce qu'on a
+// reellement recu, et on redemande la difference. Meme principe que la
+// resynchronisation de la liste des participants — le socket fait tout le
+// travail en temps normal, ceci ne rattrape que les trous.
+const RECONCILE_STREAMS_MS = 8000;
+
 const VIDEO_CONSTRAINTS = {
   width: { ideal: 1280 },
   height: { ideal: 720 },
@@ -89,6 +103,10 @@ export default function useMediasoup(meetingId, userId, userName) {
   const consumersRef = useRef(new Map()); // consumerId -> consumer
   const peersRef = useRef(new Map()); // peerId -> { peerId, name }
   const producerOwnersRef = useRef(new Map()); // producerId distant -> { peerId, kind }
+  // Producers dont la consommation est en cours. Sans ce garde-fou, la
+  // reconciliation relancerait une consommation deja partie et le serveur
+  // creerait deux consumers pour le meme flux.
+  const consumingRef = useRef(new Set());
 
   // Le stream local est aussi gardé en ref : les callbacks mémoïsés
   // (toggleMic, toggleVideo…) sont recréés à chaque changement de
@@ -186,6 +204,7 @@ export default function useMediasoup(meetingId, userId, userName) {
     deviceRef.current = null;
 
     producerOwnersRef.current.clear();
+    consumingRef.current.clear();
     peersRef.current.clear();
     setRemoteStreams({});
     setRemotePeers({});
@@ -542,8 +561,31 @@ export default function useMediasoup(meetingId, userId, userName) {
   /**
    * Consommer un producer distant
    */
-  const consume = useCallback(async (producerId, peerId, peerName) => {
+  /**
+   * Attendre que le device mediasoup soit charge. Il est nul entre la
+   * connexion du socket et `getRtpCapabilities`, et de nouveau pendant une
+   * reconnexion — deux fenetres pendant lesquelles un `new-producer` peut
+   * arriver.
+   */
+  const waitForDevice = useCallback(async (timeoutMs = 8000) => {
+    const startedAt = Date.now();
+    while (!deviceRef.current) {
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error('Device mediasoup indisponible');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }, []);
+
+  const consumeOnce = useCallback(async (producerId, peerId, peerName) => {
     try {
+      // Le device peut ne pas etre encore charge : les gestionnaires socket
+      // sont poses des la connexion, alors que le device n'existe qu'apres
+      // `getRtpCapabilities`, et il repasse a nul pendant une reconnexion.
+      // Lire `deviceRef.current.rtpCapabilities` a l'aveugle levait alors une
+      // TypeError, avalee plus bas — et le participant disparaissait.
+      await waitForDevice();
+
       // Créer le transport de réception à la première consommation. La
       // promesse est mémorisée : plusieurs `consume` peuvent partir en
       // parallèle (arrivée simultanée d'un flux audio et d'un flux vidéo) et
@@ -628,9 +670,96 @@ export default function useMediasoup(meetingId, userId, userName) {
         });
       });
     } catch (err) {
-      console.error('❌ Erreur consume:', err);
+      // Volontairement propagee : c'est `consume` qui decide de reessayer.
+      // L'avaler ici perdait le participant pour toute la reunion.
+      throw err;
     }
-  }, [createConsumerTransport, markRemoteMedia]);
+  }, [createConsumerTransport, markRemoteMedia, waitForDevice]);
+
+  /**
+   * Consommer un flux distant, avec reprise.
+   *
+   * Un echec passager — aller-retour perdu, transport pas encore etabli,
+   * telephone qui bascule de reseau — laissait auparavant ce participant sans
+   * tuile jusqu'a la fin de la reunion, sans rien afficher. La seule trace
+   * etait une ligne rouge dans la console.
+   */
+  const consume = useCallback(async (producerId, peerId, peerName) => {
+    if (producerOwnersRef.current.has(producerId)) return;
+    if (consumingRef.current.has(producerId)) return;
+    consumingRef.current.add(producerId);
+
+    try {
+      for (let attempt = 1; attempt <= CONSUME_ATTEMPTS; attempt += 1) {
+        try {
+          await consumeOnce(producerId, peerId, peerName);
+          return;
+        } catch (err) {
+          if (attempt === CONSUME_ATTEMPTS) {
+            console.error(`❌ Flux de ${peerName} irrecuperable apres ${attempt} tentatives:`, err);
+            // Pas de message a l'utilisateur : la reconciliation periodique
+            // reessaiera d'elle-meme, et une alerte pour un incident qui se
+            // repare en huit secondes ferait plus de bruit que de bien.
+            return;
+          }
+          console.warn(`⚠️ Consommation du flux de ${peerName} echouee (essai ${attempt}), nouvelle tentative…`);
+          await new Promise((resolve) => setTimeout(resolve, CONSUME_RETRY_MS * attempt));
+        }
+      }
+    } finally {
+      consumingRef.current.delete(producerId);
+    }
+  }, [consumeOnce]);
+
+  /**
+   * Rattraper les flux manquants.
+   *
+   * `new-producer` n'est emis qu'une fois : si on le rate, ou si la
+   * consommation echoue jusqu'au bout de ses tentatives, ce participant reste
+   * invisible pour le reste de la reunion. C'est ce qui produisait le symptome
+   * observe — trois personnes dans la liste, deux tuiles a l'ecran, et un
+   * client sur deux touche au hasard.
+   *
+   * On demande donc regulierement au serveur l'inventaire des flux de la salle
+   * et on consomme ce qui manque. Sans effet quand tout va bien : le filtre ne
+   * retient rien.
+   */
+  const reconcileStreams = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket?.connected || !hasJoinedRef.current || !deviceRef.current) return;
+
+    socket.emit('list-producers', (response) => {
+      if (!response?.success) return;
+
+      const missing = (response.producers || []).filter(
+        (p) => !producerOwnersRef.current.has(p.producerId) && !consumingRef.current.has(p.producerId)
+      );
+      if (missing.length === 0) return;
+
+      console.warn(`🔁 ${missing.length} flux manquant(s), nouvelle tentative de consommation`);
+      missing.forEach((p) => {
+        // Le peer peut nous être inconnu si on a aussi rate son `peer-joined`.
+        if (!peersRef.current.has(p.peerId)) {
+          const info = { peerId: p.peerId, name: p.peerName };
+          peersRef.current.set(p.peerId, info);
+          setRemotePeers((prev) => ({ ...prev, [p.peerId]: info }));
+        }
+        consume(p.producerId, p.peerId, p.peerName);
+      });
+    });
+  }, [consume]);
+
+  // La reconciliation tourne tant qu'on est en salle. Elle est aussi declenchee
+  // juste apres l'etablissement de la session, ou la fenetre de rattrapage est
+  // la plus utile : c'est la que les flux affluent tous en meme temps.
+  const reconcileStreamsRef = useRef(null);
+  reconcileStreamsRef.current = reconcileStreams;
+
+  useEffect(() => {
+    if (!isConnected) return;
+    const interval = setInterval(() => reconcileStreamsRef.current?.(), RECONCILE_STREAMS_MS);
+    return () => clearInterval(interval);
+  }, [isConnected]);
 
   /**
    * Gérer la fermeture d'un producer
@@ -985,6 +1114,12 @@ export default function useMediasoup(meetingId, userId, userName) {
     if (handRaisedRef.current) {
       socketRef.current?.emit('toggle-hand', { raised: true });
     }
+
+    // Rattrapage immediat : c'est ici que la fenetre est la plus a risque, tous
+    // les flux de la salle arrivant en meme temps. Differe d'une seconde pour
+    // laisser les consommations normales aboutir et ne rien redemander pour
+    // rien.
+    setTimeout(() => reconcileStreamsRef.current?.(), 1000);
   }, [
     meetingId,
     userName,
