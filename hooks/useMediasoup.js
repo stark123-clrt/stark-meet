@@ -101,6 +101,10 @@ export default function useMediasoup(meetingId, userId, userName) {
   const handRaisedRef = useRef(false);
   screenSharingRef.current = isScreenSharing;
   handRaisedRef.current = isHandRaised;
+  // Le gestionnaire de reprise de partage est enregistre une seule fois au
+  // montage : il ne peut pas capturer `stopScreenShare`, defini bien plus bas
+  // et recree a chaque changement de flux.
+  const stopScreenShareRef = useRef(null);
 
   // Serveurs ICE (STUN/TURN), récupérés du serveur avec des identifiants
   // temporaires. Sans eux, un participant derrière un NAT strict ou un réseau
@@ -273,6 +277,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       socketRef.current.on('producer-resumed', handleProducerResumed);
       socketRef.current.on('force-muted', handleForceMuted);
       socketRef.current.on('peer-screen-share', handlePeerScreenShare);
+      socketRef.current.on('screen-share-revoked', handleScreenShareRevoked);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetMediaSession]);
@@ -731,6 +736,16 @@ export default function useMediasoup(meetingId, userId, userName) {
   }, []);
 
   /** Un participant distant a commencé ou arrêté de partager son écran. */
+  /**
+   * Quelqu'un d'autre a pris le partage d'ecran : le serveur n'autorise qu'une
+   * presentation a la fois. On rend la camera et on l'annonce — sans message,
+   * l'ecran cesserait d'etre diffuse sans que personne ne sache pourquoi.
+   */
+  const handleScreenShareRevoked = useCallback(({ byName }) => {
+    stopScreenShareRef.current?.();
+    setError(`${byName || 'Un participant'} a pris le partage d'ecran.`);
+  }, []);
+
   const handlePeerScreenShare = useCallback(({ peerId, sharing }) => {
     setRemoteScreenShares(prev => ({ ...prev, [peerId]: !!sharing }));
   }, []);
@@ -1223,6 +1238,8 @@ export default function useMediasoup(meetingId, userId, userName) {
       console.error('❌ Erreur arrêt partage d\'écran:', err);
     }
   }, [isScreenSharing, localStream]);
+
+  stopScreenShareRef.current = stopScreenShare;
 
   /**
    * Changer de microphone en cours de réunion.

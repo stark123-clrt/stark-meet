@@ -775,6 +775,34 @@ io.on('connection', (socket) => {
     const peer = room?.peers.get(socket.id);
     if (peer) peer.sharingScreen = !!sharing;
 
+    // Un seul partage a la fois, et c'est le dernier qui gagne.
+    //
+    // Rien n'empechait deux personnes de partager en meme temps : la scene
+    // n'en met qu'une en avant et l'autre atterrissait dans le bandeau de
+    // vignettes, minuscule, sans que personne ne comprenne pourquoi. Le
+    // arbitrage se fait ici et non dans l'interface : chaque client ne connait
+    // que ce que le serveur lui annonce, deux d'entre eux pourraient se croire
+    // legitimes en meme temps.
+    //
+    // Le dernier l'emporte, comme dans Meet — refuser le nouveau partage (choix
+    // de Zoom) oblige celui qui presente a demander a l'autre de s'arreter, ce
+    // qui se negocie mal quand on est en train de parler.
+    if (sharing && room) {
+      for (const [peerId, other] of room.peers) {
+        if (peerId === socket.id || !other.sharingScreen) continue;
+
+        other.sharingScreen = false;
+        // Au partageur precedent : son client doit vraiment rendre la camera,
+        // le serveur ne peut pas remplacer sa piste a sa place.
+        io.to(peerId).emit('screen-share-revoked', { byName: socket.userName || 'Un participant' });
+        // Et a toute la salle, pour que sa tuile cesse d'etre annoncee comme
+        // un ecran partage.
+        io.to(socket.meetingId).emit('peer-screen-share', { peerId, sharing: false });
+
+        console.log(`🖥️ Partage repris par ${socket.userName} — ${other.userName} interrompu`);
+      }
+    }
+
     socket.to(socket.meetingId).emit('peer-screen-share', { peerId: socket.id, sharing: !!sharing });
   });
 
