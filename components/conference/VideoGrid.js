@@ -37,6 +37,7 @@ export default function VideoGrid({
   remoteMediaState,
   remoteScreenShares,
   isScreenSharing,
+  audioOutputId,
 }) {
   const findParticipant = (userId) =>
     participants?.find((p) => p.profile_id === userId || p.guest_id === userId);
@@ -176,6 +177,7 @@ export default function VideoGrid({
             // c'est la vignette qui porte l'audio, sinon le flux serait joué
             // deux fois et sonnerait dédoublé.
             playAudio={false}
+            audioOutputId={audioOutputId}
           />
         </div>
 
@@ -187,6 +189,7 @@ export default function VideoGrid({
               variant="tile"
               isPinned={pinnedId === tile.tileId}
               isSpotlighted={tile.tileId === spotlightTile.tileId}
+              audioOutputId={audioOutputId}
               onTogglePin={() => togglePin(tile.tileId)}
             />
           ))}
@@ -227,6 +230,7 @@ export default function VideoGrid({
                 tile={tile}
                 variant="grid"
                 isPinned={false}
+                audioOutputId={audioOutputId}
                 onTogglePin={() => togglePin(tile.tileId)}
               />
             </div>
@@ -249,7 +253,7 @@ export default function VideoGrid({
  * VideoCard : celui-ci se contente d'afficher un participant, la disposition
  * et les interactions qui la modifient restent l'affaire de VideoGrid.
  */
-function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, onTogglePin }) {
+function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, audioOutputId, onTogglePin }) {
   return (
     // La vignette se dimensionne d'elle-même (largeur fixe + format) ; la
     // tuile de grille, elle, remplit la boîte calculée par le parent.
@@ -264,6 +268,7 @@ function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, onToggleP
         handRaised={tile.handRaised}
         isScreenShare={tile.isScreenShare}
         isActiveSpeaker={isSpotlighted}
+        audioOutputId={audioOutputId}
       />
 
       <button

@@ -10,6 +10,7 @@ import SidePanel from './SidePanel';
 import DeviceSelector from './DeviceSelector';
 import Avatar from '@/components/ui/Avatar';
 import { formatDateTime } from '@/lib/datetime';
+import { copyText } from '@/lib/clipboard';
 
 function formatElapsed(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -70,6 +71,9 @@ export default function ConferenceView({
   const [showDeviceSelector, setShowDeviceSelector] = useState(false);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [copied, setCopied] = useState(false);
+  // Lien affiché à copier à la main quand ni le presse-papiers moderne ni le
+  // repli historique n'aboutissent (contexte non sécurisé, WebView bridée).
+  const [manualInviteLink, setManualInviteLink] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const joinedAtRef = useRef(null);
 
@@ -79,6 +83,8 @@ export default function ConferenceView({
     raisedHands, remoteMediaState, remoteScreenShares,
     isForceMuted: isForceMutedBySignal, isReconnecting,
     error, clearError, canShareScreen,
+    audioInputId, videoInputId, audioOutputId,
+    switchAudioInput, switchVideoInput, selectAudioOutput,
     leaveMeeting, toggleMic, setMicEnabled, toggleVideo, toggleHand,
     startScreenShare, stopScreenShare,
   } = media;
@@ -142,8 +148,16 @@ export default function ConferenceView({
     await onLeaveMeeting?.();
   };
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(`${window.location.origin}/room/${meeting?.meeting_code}`);
+  const copyCode = async () => {
+    const link = `${window.location.origin}/room/${meeting?.meeting_code}`;
+    const success = await copyText(link);
+
+    if (!success) {
+      setManualInviteLink(link);
+      return;
+    }
+
+    setManualInviteLink('');
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -263,6 +277,25 @@ export default function ConferenceView({
         </div>
       )}
 
+      {manualInviteLink && (
+        <div className="flex-none flex items-center gap-3 bg-brand-50 border-b border-brand-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
+          <span className="flex-none">Copie automatique impossible — sélectionnez le lien :</span>
+          <input
+            readOnly
+            value={manualInviteLink}
+            onFocus={(event) => event.target.select()}
+            className="flex-1 min-w-0 font-mono text-[12.5px] bg-surface border border-slate-200 rounded-sm px-2 py-1"
+          />
+          <button
+            onClick={() => setManualInviteLink('')}
+            aria-label="Masquer le lien"
+            className="flex-none p-0.5 rounded-sm hover:bg-black/5"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* ---- Scène + panneau ---- */}
       <div className="flex-1 flex min-h-0">
         <VideoGrid
@@ -277,6 +310,7 @@ export default function ConferenceView({
           remoteMediaState={remoteMediaState}
           remoteScreenShares={remoteScreenShares}
           isScreenSharing={isScreenSharing}
+          audioOutputId={audioOutputId}
         />
 
         <SidePanel
@@ -300,7 +334,17 @@ export default function ConferenceView({
         />
       </div>
 
-      {showDeviceSelector && <DeviceSelector onClose={() => setShowDeviceSelector(false)} />}
+      {showDeviceSelector && (
+        <DeviceSelector
+          onClose={() => setShowDeviceSelector(false)}
+          audioInputId={audioInputId}
+          videoInputId={videoInputId}
+          audioOutputId={audioOutputId}
+          onSelectAudioInput={switchAudioInput}
+          onSelectVideoInput={switchVideoInput}
+          onSelectAudioOutput={selectAudioOutput}
+        />
+      )}
 
       {/* ---- Barre de contrôle ---- */}
       <footer className="flex-none flex items-center justify-between gap-2 px-4 sm:px-6 h-auto sm:h-[84px] py-3 sm:py-0 bg-surface border-t border-slate-200">

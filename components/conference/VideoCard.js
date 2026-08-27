@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Hand, Maximize2, Minimize2 } from 'lucide-react';
 import { initialsOf } from '@/lib/identity';
+import useAudioLevel from '@/hooks/useAudioLevel';
 
 /**
  * Indicateur de niveau audio — les barres d'égaliseur du template.
@@ -45,14 +46,18 @@ export default function VideoCard({
   handRaised = false,
   isScreenShare = false,
   playAudio = true,
+  audioOutputId = null,
   onSelect,
 }) {
   const videoRef = useRef(null);
   const audioRef = useRef(null);
   const [isVideoActive, setIsVideoActive] = useState(false);
   const [isAudioActive, setIsAudioActive] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const audioContextRef = useRef(null);
+
+  // Volontairement non conditionné à `playAudio` : la mesure ne produit aucun
+  // son, elle ne fait que lire le flux. La couper sur la grande vue lui ferait
+  // perdre son indicateur d'intervenant actif.
+  const isSpeaking = useAudioLevel(stream, isAudioActive);
 
   // Un écran partagé doit être lisible dans son intégralité : le recadrage en
   // `cover`, correct pour un visage, ampute les bords d'un bureau — le plus
@@ -150,44 +155,18 @@ export default function VideoCard({
     };
   }, [stream, isLocal, videoEnabled, micEnabled]);
 
+  // ---- Sortie audio ----
+  // `setSinkId` n'existe que sur Chromium : ailleurs, la sortie reste celle du
+  // système, et le sélecteur de périphériques n'affiche pas la section.
   useEffect(() => {
-    // Volontairement non conditionné à `playAudio` : l'analyseur ne produit
-    // aucun son, il ne fait que mesurer. Le désactiver sur la grande vue lui
-    // ferait perdre son anneau d'intervenant actif.
-    if (!stream || !isAudioActive) {
-      setIsSpeaking(false);
-      return;
-    }
-    const audioTracks = stream.getAudioTracks();
-    if (audioTracks.length === 0) return;
+    const audioElement = audioRef.current;
+    if (!audioElement || !audioOutputId) return;
+    if (typeof audioElement.setSinkId !== 'function') return;
 
-    try {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      audioContextRef.current = audioContext;
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.8;
-      source.connect(analyser);
-
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      let animationFrame;
-      const checkAudioLevel = () => {
-        analyser.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
-        setIsSpeaking(average > 25);
-        animationFrame = requestAnimationFrame(checkAudioLevel);
-      };
-      checkAudioLevel();
-
-      return () => {
-        if (animationFrame) cancelAnimationFrame(animationFrame);
-        if (audioContext.state !== 'closed') audioContext.close();
-      };
-    } catch (error) {
-      console.error('Erreur détection audio:', error);
-    }
-  }, [stream, isAudioActive]);
+    audioElement.setSinkId(audioOutputId).catch((err) => {
+      console.warn('Sortie audio refusée par le navigateur:', err);
+    });
+  }, [audioOutputId, stream]);
 
   const isStage = variant === 'stage';
   // 'grid' occupe tout son conteneur (dimensionné au pixel par VideoGrid),

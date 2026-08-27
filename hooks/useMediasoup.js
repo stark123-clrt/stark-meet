@@ -10,6 +10,32 @@ import io from 'socket.io-client';
 
 const MEDIASOUP_SERVER_URL = process.env.NEXT_PUBLIC_MEDIASOUP_URL || 'http://localhost:3001';
 
+// Contraintes de capture, définies une seule fois : elles étaient recopiées
+// dans `initLocalMedia` et dans `toggleVideo`, et les deux copies avaient
+// commencé à diverger.
+const AUDIO_CONSTRAINTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
+
+const VIDEO_CONSTRAINTS = {
+  width: { ideal: 1280 },
+  height: { ideal: 720 },
+  frameRate: { ideal: 30 },
+};
+
+/**
+ * Contraintes visant un périphérique précis.
+ *
+ * `ideal` plutôt qu'`exact` : un périphérique débranché entre la sélection et
+ * la capture ferait échouer un `exact` avec `OverconstrainedError`, alors
+ * qu'`ideal` retombe simplement sur le périphérique par défaut.
+ */
+function withDevice(base, deviceId) {
+  return deviceId ? { ...base, deviceId: { ideal: deviceId } } : { ...base };
+}
+
 export default function useMediasoup(meetingId, userId, userName) {
   // États
   const [localStream, setLocalStream] = useState(null);
@@ -27,6 +53,13 @@ export default function useMediasoup(meetingId, userId, userName) {
   const [isForceMuted, setIsForceMuted] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
 
+  // Périphériques réellement utilisés. Ils sont renseignés depuis les pistes
+  // obtenues (et non depuis ce que l'utilisateur a choisi) : le navigateur
+  // peut retenir un autre appareil que celui demandé.
+  const [audioInputId, setAudioInputId] = useState(null);
+  const [videoInputId, setVideoInputId] = useState(null);
+  const [audioOutputId, setAudioOutputId] = useState(null);
+
   // Refs (persistent across renders)
   const socketRef = useRef(null);
   const deviceRef = useRef(null);
@@ -41,6 +74,11 @@ export default function useMediasoup(meetingId, userId, userName) {
   const videoProducerRef = useRef(null);
   const audioProducerRef = useRef(null);
   const cameraTrackRef = useRef(null); // piste caméra mise de côté pendant un partage d'écran
+  // Choix de périphériques mémorisés, à réappliquer à chaque capture : rallumer
+  // la caméra ou se reconnecter après une coupure doit reprendre l'appareil
+  // choisi, pas revenir au défaut du système.
+  const preferredAudioInputRef = useRef(null);
+  const preferredVideoInputRef = useRef(null);
   const consumersRef = useRef(new Map()); // consumerId -> consumer
   const peersRef = useRef(new Map()); // peerId -> { peerId, name }
   const producerOwnersRef = useRef(new Map()); // producerId distant -> { peerId, kind }
@@ -717,19 +755,33 @@ export default function useMediasoup(meetingId, userId, userName) {
   }, [userId]);
 
   /**
+   * Retenir les périphériques effectivement retenus par le navigateur.
+   *
+   * `getSettings().deviceId` dit ce qui a réellement été ouvert, ce qui n'est
+   * pas toujours ce qu'on avait demandé — appareil débranché, contrainte
+   * assouplie. C'est cette valeur que doit refléter le sélecteur, sans quoi il
+   * afficherait un périphérique qui ne sert pas.
+   */
+  const rememberActiveDevices = useCallback((stream) => {
+    const audioDeviceId = stream?.getAudioTracks()[0]?.getSettings?.().deviceId || null;
+    const videoDeviceId = stream?.getVideoTracks()[0]?.getSettings?.().deviceId || null;
+
+    if (audioDeviceId) {
+      preferredAudioInputRef.current = audioDeviceId;
+      setAudioInputId(audioDeviceId);
+    }
+    if (videoDeviceId) {
+      preferredVideoInputRef.current = videoDeviceId;
+      setVideoInputId(videoDeviceId);
+    }
+  }, []);
+
+  /**
    * Initialiser le média local (caméra et micro)
    */
   const initLocalMedia = useCallback(async () => {
-    const audioConstraints = {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    };
-    const videoConstraints = {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      frameRate: { ideal: 30 }
-    };
+    const audioConstraints = withDevice(AUDIO_CONSTRAINTS, preferredAudioInputRef.current);
+    const videoConstraints = withDevice(VIDEO_CONSTRAINTS, preferredVideoInputRef.current);
 
     try {
       console.log('📹 Demande d\'accès caméra/micro...');
@@ -743,6 +795,7 @@ export default function useMediasoup(meetingId, userId, userName) {
         audioTracks: stream.getAudioTracks().length
       });
 
+      rememberActiveDevices(stream);
       applyLocalStream(stream);
       return stream;
     } catch (err) {
@@ -758,6 +811,7 @@ export default function useMediasoup(meetingId, userId, userName) {
           console.log('✅ Média local obtenu (audio seul)');
           setIsVideoOn(false);
           setError('Caméra indisponible (déjà utilisée par un autre onglet ou une autre application ?). Rejoint en audio seul.');
+          rememberActiveDevices(audioOnlyStream);
           applyLocalStream(audioOnlyStream);
           return audioOnlyStream;
         } catch (audioErr) {
@@ -771,7 +825,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       setError('Impossible d\'accéder à la caméra/micro. Vérifiez les permissions.');
       throw err;
     }
-  }, [applyLocalStream]);
+  }, [applyLocalStream, rememberActiveDevices]);
 
   /**
    * Préparer l'aperçu local, sans rien connecter.
@@ -1048,11 +1102,7 @@ export default function useMediasoup(meetingId, userId, userName) {
 
     try {
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 }
-        }
+        video: withDevice(VIDEO_CONSTRAINTS, preferredVideoInputRef.current),
       });
 
       const newVideoTrack = newStream.getVideoTracks()[0];
@@ -1073,13 +1123,14 @@ export default function useMediasoup(meetingId, userId, userName) {
         videoProducerRef.current = await producerTransportRef.current.produce({ track: newVideoTrack });
       }
 
+      rememberActiveDevices(stream);
       setIsVideoOn(true);
       console.log('📹 Webcam rallumée');
     } catch (err) {
       console.error('❌ Erreur rallumage webcam:', err);
       setError('Impossible de rallumer la caméra');
     }
-  }, [isVideoOn]);
+  }, [isVideoOn, rememberActiveDevices]);
 
   /**
    * Démarrer le partage d'écran. Remplace la piste du producer vidéo
@@ -1173,6 +1224,145 @@ export default function useMediasoup(meetingId, userId, userName) {
     }
   }, [isScreenSharing, localStream]);
 
+  /**
+   * Changer de microphone en cours de réunion.
+   *
+   * La nouvelle piste remplace l'ancienne dans le producer (`replaceTrack`) :
+   * les consumers des autres participants restent valides, personne n'entend
+   * de coupure. L'ancienne version se contentait d'ouvrir un flux puis de le
+   * refermer aussitôt — le choix n'était jamais appliqué nulle part.
+   *
+   * @returns {Promise<boolean>} vrai si le micro a bien changé
+   */
+  const switchAudioInput = useCallback(async (deviceId) => {
+    const stream = localStreamRef.current;
+    if (!stream) return false;
+
+    const previousTrack = stream.getAudioTracks()[0] || null;
+    // On demande le nouveau périphérique AVANT de lâcher l'ancien : si la
+    // capture échoue, la personne reste audible avec son micro actuel.
+    let newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia({
+        audio: withDevice(AUDIO_CONSTRAINTS, deviceId),
+      });
+    } catch (err) {
+      console.error('❌ Micro indisponible:', err);
+      setError("Ce microphone est indisponible. L'ancien reste actif.");
+      return false;
+    }
+
+    const newTrack = newStream.getAudioTracks()[0];
+    if (!newTrack) return false;
+
+    // Le micro coupé doit le rester : sans ça, changer de périphérique
+    // rouvrirait le micro de quelqu'un que l'hôte vient de faire taire.
+    newTrack.enabled = previousTrack ? previousTrack.enabled : isMicOn;
+
+    try {
+      if (audioProducerRef.current) {
+        await audioProducerRef.current.replaceTrack({ track: newTrack });
+      }
+      if (previousTrack) {
+        previousTrack.stop();
+        stream.removeTrack(previousTrack);
+      }
+      stream.addTrack(newTrack);
+
+      preferredAudioInputRef.current = deviceId || null;
+      rememberActiveDevices(stream);
+      console.log('🎤 Microphone changé');
+      return true;
+    } catch (err) {
+      console.error('❌ Changement de micro impossible:', err);
+      newTrack.stop();
+      setError('Changement de microphone impossible.');
+      return false;
+    }
+  }, [isMicOn, rememberActiveDevices]);
+
+  /**
+   * Changer de caméra en cours de réunion.
+   *
+   * Deux cas n'ouvrent aucun flux : caméra éteinte (le choix est simplement
+   * mémorisé pour le prochain allumage) et partage d'écran en cours (le
+   * producer vidéo porte l'écran, pas le visage).
+   *
+   * @returns {Promise<boolean>} vrai si le changement est appliqué maintenant
+   */
+  const switchVideoInput = useCallback(async (deviceId) => {
+    const stream = localStreamRef.current;
+    if (!stream) return false;
+
+    const previousPreference = preferredVideoInputRef.current;
+    preferredVideoInputRef.current = deviceId || null;
+
+    // Deux cas n'ouvrent rien maintenant : le choix est retenu, et c'est déjà
+    // le bon état à afficher.
+    if (screenSharingRef.current) {
+      setVideoInputId(deviceId || null);
+      setError("La caméra changera à la fin du partage d'écran.");
+      return true;
+    }
+    if (!isVideoOn) {
+      setVideoInputId(deviceId || null);
+      return true;
+    }
+
+    const previousTrack = stream.getVideoTracks()[0] || null;
+    let newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia({
+        video: withDevice(VIDEO_CONSTRAINTS, deviceId),
+      });
+    } catch (err) {
+      // La caméra d'avant tourne toujours : la préférence doit revenir sur
+      // elle, sinon le prochain allumage viserait un appareil qui a échoué.
+      preferredVideoInputRef.current = previousPreference;
+      console.error('❌ Caméra indisponible:', err);
+      setError("Cette caméra est indisponible. L'ancienne reste active.");
+      return false;
+    }
+
+    const newTrack = newStream.getVideoTracks()[0];
+    if (!newTrack) {
+      preferredVideoInputRef.current = previousPreference;
+      return false;
+    }
+
+    try {
+      if (videoProducerRef.current) {
+        await videoProducerRef.current.replaceTrack({ track: newTrack });
+      } else if (producerTransportRef.current) {
+        videoProducerRef.current = await producerTransportRef.current.produce({ track: newTrack });
+      }
+      if (previousTrack) {
+        previousTrack.stop();
+        stream.removeTrack(previousTrack);
+      }
+      stream.addTrack(newTrack);
+
+      rememberActiveDevices(stream);
+      console.log('📹 Caméra changée');
+      return true;
+    } catch (err) {
+      preferredVideoInputRef.current = previousPreference;
+      console.error('❌ Changement de caméra impossible:', err);
+      newTrack.stop();
+      setError('Changement de caméra impossible.');
+      return false;
+    }
+  }, [isVideoOn, rememberActiveDevices]);
+
+  /**
+   * Choisir la sortie audio (casque, enceintes). Le hook ne fait que retenir
+   * le choix : c'est chaque balise `<audio>` de tuile qui appelle `setSinkId`,
+   * puisque le son sort d'elles et non d'un objet central.
+   */
+  const selectAudioOutput = useCallback((deviceId) => {
+    setAudioOutputId(deviceId || null);
+  }, []);
+
   return {
     localStream,
     remoteStreams,
@@ -1190,6 +1380,12 @@ export default function useMediasoup(meetingId, userId, userName) {
     error,
     clearError,
     canShareScreen,
+    audioInputId,
+    videoInputId,
+    audioOutputId,
+    switchAudioInput,
+    switchVideoInput,
+    selectAudioOutput,
     initPreview,
     joinMeeting,
     leaveMeeting,

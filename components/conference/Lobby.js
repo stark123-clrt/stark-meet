@@ -5,6 +5,7 @@ import { Mic, MicOff, Video, VideoOff, Copy, Check, Clock, Link2 } from 'lucide-
 import Avatar from '@/components/ui/Avatar';
 import { formatLongDate } from '@/lib/datetime';
 import { formatTimeRange } from '@/lib/meetingSchedule';
+import { copyText } from '@/lib/clipboard';
 
 /**
  * Écran de préparation, avant d'entrer dans la salle.
@@ -32,6 +33,9 @@ export default function Lobby({
 }) {
   const videoRef = useRef(null);
   const [copied, setCopied] = useState(false);
+  // Repli quand ni le presse-papiers moderne ni `execCommand` n'aboutissent :
+  // le champ devient sélectionnable pour une copie manuelle.
+  const [manualLink, setManualLink] = useState('');
 
   // Le flux est branché dès qu'il existe ; l'aperçu est en miroir, comme dans
   // toutes les applications d'appel — on se voit comme dans une glace.
@@ -44,8 +48,13 @@ export default function Lobby({
     return () => { element.srcObject = null; };
   }, [localStream, isVideoOn]);
 
-  const copyLink = () => {
-    navigator.clipboard.writeText(`${window.location.origin}/room/${meeting?.meeting_code}`);
+  const copyLink = async () => {
+    const link = `${window.location.origin}/room/${meeting?.meeting_code}`;
+    const success = await copyText(link);
+
+    setManualLink(success ? '' : link);
+    if (!success) return;
+
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -133,6 +142,20 @@ export default function Lobby({
               ? <Check className="h-4 w-4 text-success-500 flex-none" />
               : <Copy className="h-4 w-4 text-slate-500 flex-none" />}
           </button>
+
+          {manualLink && (
+            <div className="mt-3">
+              <p className="text-[12px] text-slate-500">
+                Copie automatique impossible — sélectionnez le lien pour le copier :
+              </p>
+              <input
+                readOnly
+                value={manualLink}
+                onFocus={(event) => event.target.select()}
+                className="mt-1.5 w-full px-3 h-10 rounded-sm border border-slate-200 bg-surface font-mono text-[12.5px] text-slate-700"
+              />
+            </div>
+          )}
 
           {error && (
             <p className="mt-4 px-3.5 py-2.5 rounded-sm bg-warning-50 text-[13px] text-slate-700">
