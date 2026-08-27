@@ -26,6 +26,23 @@ export const metadata = {
   description: 'Vos réunions, sans friction.',
 };
 
+/**
+ * `viewportFit: 'cover'` etend la page sous les arrondis et sous l'indicateur
+ * d'accueil de l'iPhone. C'est ce qui donne leur valeur aux variables
+ * `env(safe-area-inset-*)` : sans ce reglage elles valent zero partout, et les
+ * marges de securite posees dans les composants ne servent a rien. Les deux
+ * vont ensemble.
+ *
+ * `maximumScale` est volontairement absent : brider le zoom rendrait
+ * l'interface inaccessible a qui a besoin d'agrandir.
+ */
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#f4f7fb',
+};
+
 export default function RootLayout({ children }) {
   // `--font-display` pointe sur la même police que `--font-sans` : les classes
   // `font-display` déjà posées dans les composants restent valables, sans avoir

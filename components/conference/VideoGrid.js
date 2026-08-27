@@ -276,10 +276,14 @@ function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, audioOutp
         title={isPinned ? 'Détacher' : 'Épingler en grand'}
         // Haut-centre : les quatre coins sont déjà pris (HÔTE, main levée,
         // micro coupé) et se chevaucheraient.
-        className={`absolute top-1.5 left-1/2 -translate-x-1/2 z-40 w-7 h-7 rounded-md flex items-center justify-center transition-all ${
+        aria-label={isPinned ? 'Détacher' : 'Épingler en grand'}
+        // Visible en permanence la ou il n'y a pas de survol : au doigt,
+        // `group-hover` ne se declenche jamais, l'epinglage etait donc
+        // inaccessible sur telephone.
+        className={`absolute top-1.5 left-1/2 -translate-x-1/2 z-40 w-8 h-8 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-all ${
           isPinned
             ? 'bg-brand-500 text-white opacity-100'
-            : 'bg-black/55 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-black/75'
+            : 'bg-black/55 text-white opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100 hover:bg-black/75'
         }`}
       >
         {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}

@@ -59,6 +59,10 @@ export default function useMediasoup(meetingId, userId, userName) {
   const [audioInputId, setAudioInputId] = useState(null);
   const [videoInputId, setVideoInputId] = useState(null);
   const [audioOutputId, setAudioOutputId] = useState(null);
+  // Camera avant ('user') ou arriere ('environment'). Sur ordinateur la notion
+  // n'existe pas : la valeur reste nulle et le bouton de bascule est masque.
+  const [facingMode, setFacingMode] = useState(null);
+  const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
 
   // Refs (persistent across renders)
   const socketRef = useRef(null);
@@ -79,6 +83,9 @@ export default function useMediasoup(meetingId, userId, userName) {
   // choisi, pas revenir au défaut du système.
   const preferredAudioInputRef = useRef(null);
   const preferredVideoInputRef = useRef(null);
+  // Sur telephone on vise une orientation de camera, pas un identifiant : les
+  // deux s'excluent, choisir l'un efface l'autre.
+  const preferredFacingRef = useRef(null);
   const consumersRef = useRef(new Map()); // consumerId -> consumer
   const peersRef = useRef(new Map()); // peerId -> { peerId, name }
   const producerOwnersRef = useRef(new Map()); // producerId distant -> { peerId, kind }
@@ -117,6 +124,32 @@ export default function useMediasoup(meetingId, userId, userName) {
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
+
+  // Y a-t-il de quoi basculer ? Les libelles et le nombre de cameras ne sont
+  // exposes qu'une fois l'autorisation accordee, d'où l'attente du flux local.
+  // Un ordinateur portable avec une webcam externe branchee compte deux
+  // cameras : le bouton lui sert aussi.
+  useEffect(() => {
+    if (!localStream || typeof navigator === 'undefined' || !navigator.mediaDevices) return;
+    let cancelled = false;
+
+    const countCameras = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (cancelled) return;
+        setHasMultipleCameras(devices.filter((d) => d.kind === 'videoinput').length > 1);
+      } catch {
+        // Enumeration refusee : on laisse le bouton masque.
+      }
+    };
+
+    countCameras();
+    navigator.mediaDevices.addEventListener?.('devicechange', countCameras);
+    return () => {
+      cancelled = true;
+      navigator.mediaDevices.removeEventListener?.('devicechange', countCameras);
+    };
+  }, [localStream]);
 
   // Le partage d'écran n'existe pas sur mobile : le bouton doit le refléter
   // plutôt que de proposer une action vouée à échouer.
@@ -770,6 +803,23 @@ export default function useMediasoup(meetingId, userId, userName) {
   }, [userId]);
 
   /**
+   * Contraintes de capture video du moment.
+   *
+   * Un identifiant de peripherique est plus precis qu'une orientation : quand
+   * l'utilisateur a explicitement choisi une camera dans les reglages, ce choix
+   * prime sur la bascule avant/arriere.
+   */
+  const videoCapture = useCallback(() => {
+    if (preferredVideoInputRef.current) {
+      return withDevice(VIDEO_CONSTRAINTS, preferredVideoInputRef.current);
+    }
+    if (preferredFacingRef.current) {
+      return { ...VIDEO_CONSTRAINTS, facingMode: { ideal: preferredFacingRef.current } };
+    }
+    return { ...VIDEO_CONSTRAINTS };
+  }, []);
+
+  /**
    * Retenir les périphériques effectivement retenus par le navigateur.
    *
    * `getSettings().deviceId` dit ce qui a réellement été ouvert, ce qui n'est
@@ -789,6 +839,12 @@ export default function useMediasoup(meetingId, userId, userName) {
       preferredVideoInputRef.current = videoDeviceId;
       setVideoInputId(videoDeviceId);
     }
+
+    // `facingMode` n'est renseigne que par les navigateurs mobiles ; sur
+    // ordinateur il reste absent, ce qui suffit a masquer le bouton.
+    const facing = stream?.getVideoTracks()[0]?.getSettings?.().facingMode || null;
+    setFacingMode(facing);
+    if (facing) preferredFacingRef.current = facing;
   }, []);
 
   /**
@@ -796,7 +852,7 @@ export default function useMediasoup(meetingId, userId, userName) {
    */
   const initLocalMedia = useCallback(async () => {
     const audioConstraints = withDevice(AUDIO_CONSTRAINTS, preferredAudioInputRef.current);
-    const videoConstraints = withDevice(VIDEO_CONSTRAINTS, preferredVideoInputRef.current);
+    const videoConstraints = videoCapture();
 
     try {
       console.log('📹 Demande d\'accès caméra/micro...');
@@ -840,7 +896,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       setError('Impossible d\'accéder à la caméra/micro. Vérifiez les permissions.');
       throw err;
     }
-  }, [applyLocalStream, rememberActiveDevices]);
+  }, [applyLocalStream, rememberActiveDevices, videoCapture]);
 
   /**
    * Préparer l'aperçu local, sans rien connecter.
@@ -1117,7 +1173,7 @@ export default function useMediasoup(meetingId, userId, userName) {
 
     try {
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: withDevice(VIDEO_CONSTRAINTS, preferredVideoInputRef.current),
+        video: videoCapture(),
       });
 
       const newVideoTrack = newStream.getVideoTracks()[0];
@@ -1145,7 +1201,7 @@ export default function useMediasoup(meetingId, userId, userName) {
       console.error('❌ Erreur rallumage webcam:', err);
       setError('Impossible de rallumer la caméra');
     }
-  }, [isVideoOn, rememberActiveDevices]);
+  }, [isVideoOn, rememberActiveDevices, videoCapture]);
 
   /**
    * Démarrer le partage d'écran. Remplace la piste du producer vidéo
@@ -1313,6 +1369,8 @@ export default function useMediasoup(meetingId, userId, userName) {
 
     const previousPreference = preferredVideoInputRef.current;
     preferredVideoInputRef.current = deviceId || null;
+    // Choix explicite d'une camera : l'orientation memorisee n'a plus cours.
+    preferredFacingRef.current = null;
 
     // Deux cas n'ouvrent rien maintenant : le choix est retenu, et c'est déjà
     // le bon état à afficher.
@@ -1372,6 +1430,103 @@ export default function useMediasoup(meetingId, userId, userName) {
   }, [isVideoOn, rememberActiveDevices]);
 
   /**
+   * Basculer entre la camera avant et la camera arriere.
+   *
+   * C'est le contrôle mobile le plus utilise, et il n'existait pas : on ne
+   * pouvait montrer ni un tableau, ni un document, ni un ecran physique. C'est
+   * aussi la seule forme de « presentation » possible depuis un telephone,
+   * puisque aucun navigateur mobile n'implemente la capture d'ecran.
+   *
+   * On raisonne en orientation (`facingMode`) et non en identifiant de
+   * peripherique : sur Android, un telephone expose parfois quatre cameras
+   * arriere, dont on ne sait pas laquelle est la principale. Le systeme, lui,
+   * le sait.
+   *
+   * @returns {Promise<boolean>}
+   */
+  const switchCamera = useCallback(async () => {
+    const stream = localStreamRef.current;
+    if (!stream) return false;
+
+    if (screenSharingRef.current) {
+      setError("Arretez le partage d'ecran avant de changer de camera.");
+      return false;
+    }
+
+    const current = preferredFacingRef.current
+      || stream.getVideoTracks()[0]?.getSettings?.().facingMode
+      || 'user';
+    const next = current === 'environment' ? 'user' : 'environment';
+
+    const previousFacing = preferredFacingRef.current;
+    const previousDevice = preferredVideoInputRef.current;
+    // L'identifiant fige la camera : tant qu'il est pose, l'orientation
+    // demandee serait ignoree.
+    preferredVideoInputRef.current = null;
+    preferredFacingRef.current = next;
+
+    const restore = () => {
+      preferredFacingRef.current = previousFacing;
+      preferredVideoInputRef.current = previousDevice;
+    };
+
+    // Camera coupee : le choix est retenu, `toggleVideo` s'en servira.
+    if (!isVideoOn) {
+      setFacingMode(next);
+      return true;
+    }
+
+    const previousTrack = stream.getVideoTracks()[0] || null;
+    let newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia({
+        video: { ...VIDEO_CONSTRAINTS, facingMode: { ideal: next } },
+      });
+    } catch (err) {
+      restore();
+      console.error('Camera indisponible:', err);
+      setError("Impossible d'acceder a cette camera.");
+      return false;
+    }
+
+    const newTrack = newStream.getVideoTracks()[0];
+    if (!newTrack) {
+      restore();
+      return false;
+    }
+
+    try {
+      if (videoProducerRef.current) {
+        await videoProducerRef.current.replaceTrack({ track: newTrack });
+      } else if (producerTransportRef.current) {
+        videoProducerRef.current = await producerTransportRef.current.produce({ track: newTrack });
+      }
+      if (previousTrack) {
+        previousTrack.stop();
+        stream.removeTrack(previousTrack);
+      }
+      stream.addTrack(newTrack);
+
+      rememberActiveDevices(stream);
+      // Le navigateur peut avoir servi autre chose que ce qu'on visait
+      // (`ideal`) : c'est l'etat reel qui doit s'afficher. `rememberActiveDevices`
+      // repose `preferredVideoInputRef`, on l'efface pour que la prochaine
+      // bascule reste pilotee par l'orientation.
+      preferredVideoInputRef.current = null;
+      preferredFacingRef.current =
+        newTrack.getSettings?.().facingMode || next;
+      setFacingMode(preferredFacingRef.current);
+      return true;
+    } catch (err) {
+      restore();
+      console.error('Bascule de camera impossible:', err);
+      newTrack.stop();
+      setError('Bascule de camera impossible.');
+      return false;
+    }
+  }, [isVideoOn, rememberActiveDevices]);
+
+  /**
    * Choisir la sortie audio (casque, enceintes). Le hook ne fait que retenir
    * le choix : c'est chaque balise `<audio>` de tuile qui appelle `setSinkId`,
    * puisque le son sort d'elles et non d'un objet central.
@@ -1400,6 +1555,9 @@ export default function useMediasoup(meetingId, userId, userName) {
     audioInputId,
     videoInputId,
     audioOutputId,
+    facingMode,
+    hasMultipleCameras,
+    switchCamera,
     switchAudioInput,
     switchVideoInput,
     selectAudioOutput,

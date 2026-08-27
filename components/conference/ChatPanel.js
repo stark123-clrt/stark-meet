@@ -92,6 +92,16 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
   const [sending, setSending] = useState(false);
   const [composerPickerOpen, setComposerPickerOpen] = useState(false);
   const [reactionPickerFor, setReactionPickerFor] = useState(null);
+  // Message dont la barre de reactions rapides est epinglee. Utile uniquement
+  // au doigt : sans survol, cette barre etait inaccessible sur telephone.
+  const [actionsFor, setActionsFor] = useState(null);
+
+  const toggleActions = (id) => {
+    // Sur un appareil a survol, la barre apparait deja toute seule : un clic ne
+    // doit pas venir l'epingler par-dessus.
+    if (typeof window !== 'undefined' && window.matchMedia?.('(hover: hover)').matches) return;
+    setActionsFor((current) => (current === id ? null : id));
+  };
   const [pendingCount, setPendingCount] = useState(0);
 
   const scrollRef = useRef(null);
@@ -225,6 +235,8 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
               pickerOpen={reactionPickerFor === item.id}
               onOpenPicker={() => setReactionPickerFor(item.id)}
               onClosePicker={() => setReactionPickerFor(null)}
+              actionsOpen={actionsFor === item.id}
+              onToggleActions={() => toggleActions(item.id)}
             />
           )
         )}
@@ -300,6 +312,8 @@ function MessageRow({
   pickerOpen,
   onOpenPicker,
   onClosePicker,
+  actionsOpen,
+  onToggleActions,
 }) {
   const isMine = message.sender_id === currentUserId;
   const color = avatarColorFor(message.sender_id || message.sender_name);
@@ -311,6 +325,7 @@ function MessageRow({
   // WhatsApp ou Teams. L'avatar reste du côté extérieur de la bulle.
   return (
     <div
+      onClick={onToggleActions}
       className={`group relative flex gap-2 px-1 ${startsGroup ? 'mt-3' : ''} ${
         isMine ? 'flex-row-reverse' : 'flex-row'
       }`}
@@ -377,12 +392,17 @@ function MessageRow({
         )}
       </div>
 
-      {/* Barre de réactions rapides, révélée au survol — côté intérieur, pour
-          ne pas déborder du panneau. */}
+      {/* Barre de réactions rapides — côté intérieur, pour ne pas déborder du
+          panneau. Révélée au survol sur ordinateur ; au doigt, où le survol
+          n'existe pas, elle s'ouvre en touchant le message. Sans ça, réagir
+          était tout simplement impossible sur téléphone. */}
       <div
+        // Les clics de la barre ne doivent pas remonter jusqu'au message, sinon
+        // choisir une réaction refermerait la barre dans le même geste.
+        onClick={(event) => event.stopPropagation()}
         className={`absolute -top-2 z-10 items-center gap-0.5 p-0.5 rounded-md bg-surface border border-slate-200 shadow-lg ${
           isMine ? 'left-2' : 'right-2'
-        } ${pickerOpen ? 'flex' : 'hidden group-hover:flex'}`}
+        } ${pickerOpen || actionsOpen ? 'flex' : 'hidden'} [@media(hover:hover)]:group-hover:flex`}
       >
         {QUICK_REACTIONS.map((emoji) => (
           <button

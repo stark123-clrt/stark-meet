@@ -83,3 +83,37 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
 }
+
+/* Marge basse de sécurité iOS.
+   Sur iPhone, la barre d'accueil recouvre le bas de l'écran : sans cette
+   réserve, la barre de contrôle de la réunion et la feuille du panneau
+   passaient dessous, et le bouton « Quitter » devenait à moitié inatteignable.
+   `env()` ne renvoie une valeur que si le document déclare `viewport-fit:
+   cover` (fait dans app/layout.js) ; ailleurs elle vaut zéro, la règle est donc
+   sans effet sur les autres plateformes. */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Même réserve pour la barre de contrôle, cumulée avec ses 12 px de
+   respiration. Bornée sous le point de rupture `sm` : ces règles sont écrites
+   après `@tailwind utilities`, elles l'emporteraient donc sur un `sm:pb-0` et
+   décaleraient la barre sur ordinateur. */
+@media (max-width: 639.98px) {
+  .pb-safe-3 {
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Hauteur de la feuille mobile du panneau. Même raison que `.h-viewport` :
+   `dvh` suit la zone réellement visible quand la barre d'adresse se replie.
+   Écrit ici plutôt qu'en deux classes Tailwind `h-[78vh] h-[78dvh]`, dont
+   l'ordre dans la feuille générée n'est pas garanti — le repli pourrait
+   l'emporter sur la règle moderne. Bornée sous `lg`, sinon elle écraserait le
+   `lg:h-auto` de la colonne fixe sur grand écran. */
+@media (max-width: 1023.98px) {
+  .h-sheet {
+    height: 78vh;
+    height: 78dvh;
+  }
+}

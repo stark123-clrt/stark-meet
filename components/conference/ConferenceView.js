@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Mic, MicOff, Video, VideoOff, PhoneOff, Monitor, MonitorOff, Hand,
-  Lock, LockOpen, Settings, Copy, Check, Users, X, Circle,
+  Lock, LockOpen, Settings, Copy, Check, Users, X, Circle, SwitchCamera,
 } from 'lucide-react';
 import VideoGrid from './VideoGrid';
 import SidePanel from './SidePanel';
@@ -11,6 +11,7 @@ import DeviceSelector from './DeviceSelector';
 import Avatar from '@/components/ui/Avatar';
 import { formatDateTime } from '@/lib/datetime';
 import { copyText } from '@/lib/clipboard';
+import useWakeLock from '@/hooks/useWakeLock';
 
 function formatElapsed(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -74,6 +75,15 @@ export default function ConferenceView({
   // Lien affiché à copier à la main quand ni le presse-papiers moderne ni le
   // repli historique n'aboutissent (contexte non sécurisé, WebView bridée).
   const [manualInviteLink, setManualInviteLink] = useState('');
+  // Message d'explication propre a l'interface (le partage d'ecran impossible
+  // sur mobile, par exemple) : ce n'est pas une erreur du media, il n'a rien a
+  // faire dans l'etat du hook.
+  const [notice, setNotice] = useState('');
+
+  // L'ecran ne doit pas s'eteindre pendant qu'on ecoute : sans ca, un telephone
+  // se verrouille au bout de trente secondes, coupe la camera et met la page en
+  // veille — c'est-a-dire pendant l'essentiel d'une reunion.
+  useWakeLock(isConnected);
   const [elapsed, setElapsed] = useState(0);
   const joinedAtRef = useRef(null);
 
@@ -84,6 +94,7 @@ export default function ConferenceView({
     isForceMuted: isForceMutedBySignal, isReconnecting,
     error, clearError, canShareScreen,
     audioInputId, videoInputId, audioOutputId,
+    facingMode, hasMultipleCameras, switchCamera,
     switchAudioInput, switchVideoInput, selectAudioOutput,
     leaveMeeting, toggleMic, setMicEnabled, toggleVideo, toggleHand,
     startScreenShare, stopScreenShare,
@@ -106,6 +117,12 @@ export default function ConferenceView({
     const timer = setTimeout(() => clearError?.(), 8000);
     return () => clearTimeout(timer);
   }, [error, clearError]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(''), 10000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   // Ne montrer que les participants réellement connectés au SFU (+ moi) : une
   // ligne « admitted » en base survit indéfiniment à un onglet fermé sans
@@ -160,6 +177,27 @@ export default function ConferenceView({
     setManualInviteLink('');
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  /**
+   * Aucun navigateur mobile n'implemente `getDisplayMedia` : ni iOS, ou la
+   * capture passe par ReplayKit reserve aux applications natives, ni Android,
+   * ou elle passe par MediaProjection. Zoom et Meet ne savent pas le faire
+   * depuis un navigateur non plus.
+   *
+   * Le bouton reste donc actif et explique, au lieu d'etre grise avec la raison
+   * cachee dans une infobulle que le tactile n'affiche jamais.
+   */
+  const handlePresent = () => {
+    if (canShareScreen) {
+      startScreenShare();
+      return;
+    }
+    setNotice(
+      hasMultipleCameras
+        ? "Le partage d'écran n'existe pas sur les navigateurs mobiles. Utilisez la bascule de caméra pour filmer un document, un tableau ou un écran."
+        : "Le partage d'écran n'est pas disponible sur ce navigateur. Rejoignez depuis un ordinateur pour présenter."
+    );
   };
 
   const isLocked = !!meeting?.locked_at;
@@ -235,25 +273,6 @@ export default function ConferenceView({
             <Settings className="h-4 w-4" />
           </button>
 
-          <button
-            onClick={() => setMobilePanelOpen(true)}
-            title="Participants et discussion"
-            className="lg:hidden relative p-2 rounded-sm text-slate-500 hover:text-slate-950 hover:bg-slate-100 transition-colors"
-          >
-            <Users className="h-4 w-4" />
-            {/* Le panneau est masqué sur mobile : sans ce cumul, un message de
-                chat resterait invisible. Les demandes d'admission gardent la
-                priorité de couleur. */}
-            {waitingCount + unreadMessages > 0 && (
-              <span
-                className={`absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center ${
-                  waitingCount > 0 ? 'bg-warning-500 text-white' : 'bg-brand-500 text-white'
-                }`}
-              >
-                {waitingCount + unreadMessages}
-              </span>
-            )}
-          </button>
         </div>
       </header>
 
@@ -272,6 +291,15 @@ export default function ConferenceView({
         <div className="flex-none flex items-start gap-3 bg-warning-50 border-b border-warning-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
           <span className="flex-1">{error}</span>
           <button onClick={clearError} title="Masquer" className="flex-none p-0.5 rounded-sm hover:bg-black/5">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {notice && !isReconnecting && (
+        <div className="flex-none flex items-start gap-3 bg-brand-50 border-b border-brand-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
+          <span className="flex-1">{notice}</span>
+          <button onClick={() => setNotice('')} aria-label="Masquer" className="flex-none p-0.5 rounded-sm hover:bg-black/5">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -327,6 +355,8 @@ export default function ConferenceView({
           onDeny={onDeny}
           onForceMute={onForceMute}
           onRemove={onRemove}
+          isLocked={isLocked}
+          onToggleLock={onToggleLock}
           mobileOpen={mobilePanelOpen}
           onCloseMobile={() => setMobilePanelOpen(false)}
           onUnreadChange={setUnreadMessages}
@@ -347,7 +377,7 @@ export default function ConferenceView({
       )}
 
       {/* ---- Barre de contrôle ---- */}
-      <footer className="flex-none flex items-center justify-between gap-2 px-4 sm:px-6 h-auto sm:h-[84px] py-3 sm:py-0 bg-surface border-t border-slate-200">
+      <footer className="flex-none flex items-center justify-between gap-2 px-4 sm:px-6 h-auto sm:h-[84px] pt-3 sm:pt-0 pb-safe-3 sm:pb-0 bg-surface border-t border-slate-200">
         <div className="hidden md:flex items-center gap-2.5 w-[260px] flex-none">
           <Avatar size="sm" name={currentUserName} seed={currentUserId} />
           <div className="flex flex-col min-w-0">
@@ -373,12 +403,25 @@ export default function ConferenceView({
             disabled={isScreenSharing}
             active={isVideoOn}
           />
+          {/* Bascule avant/arriere : le contrôle mobile le plus utilise, et la
+              seule facon de « presenter » quelque chose depuis un telephone.
+              Masque quand il n'y a qu'une camera — sur un ordinateur fixe, il
+              n'aurait rien a basculer. */}
+          {hasMultipleCameras && (
+            <Control
+              icon={SwitchCamera}
+              label={facingMode === 'environment' ? 'Revenir à la caméra avant' : 'Passer à la caméra arrière'}
+              onClick={switchCamera}
+              disabled={!isVideoOn || isScreenSharing}
+              tone="accent"
+              active={facingMode === 'environment'}
+            />
+          )}
           {/* Bleu clair = disponible, bleu plein = partage en cours. */}
           <Control
             icon={isScreenSharing ? MonitorOff : Monitor}
-            label={canShareScreen ? "Partager l'écran" : "Partage d'écran indisponible sur ce navigateur"}
-            onClick={isScreenSharing ? stopScreenShare : startScreenShare}
-            disabled={!canShareScreen && !isScreenSharing}
+            label={isScreenSharing ? "Arrêter le partage" : canShareScreen ? "Partager l'écran" : 'Présenter'}
+            onClick={isScreenSharing ? stopScreenShare : handlePresent}
             tone={isScreenSharing ? 'neutral' : 'accent'}
             active
           />
@@ -400,15 +443,42 @@ export default function ConferenceView({
             tone="warning"
             active={isHandRaised}
           />
+          {/* Le verrouillage quitte la barre sur mobile : c'est une action rare,
+              et elle coûtait la largeur qui manquait aux contrôles permanents.
+              Elle reste accessible à l'hôte en haut du panneau Participants. */}
           {isHost && (
             <Control
               icon={isLocked ? Lock : LockOpen}
               label={isLocked ? 'Déverrouiller la salle' : 'Verrouiller la salle'}
               onClick={onToggleLock}
               tone="warning"
+              className="hidden sm:flex"
               active={isLocked}
             />
           )}
+
+          {/* Participants et discussion, dans la barre du bas et non plus dans
+              un coin de l'en-tête : sur téléphone, le pouce est ici. */}
+          <button
+            onClick={() => setMobilePanelOpen(true)}
+            aria-label="Participants et discussion"
+            title="Participants et discussion"
+            className="lg:hidden relative w-11 h-11 rounded-full flex-none flex items-center justify-center bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+          >
+            <Users className="h-5 w-5" />
+            {/* Le panneau est masqué sur mobile : sans ce cumul, un message de
+                chat resterait invisible. Les demandes d'admission gardent la
+                priorité de couleur. */}
+            {waitingCount + unreadMessages > 0 && (
+              <span
+                className={`absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full text-[9.5px] font-bold flex items-center justify-center ${
+                  waitingCount > 0 ? 'bg-warning-500 text-white' : 'bg-brand-500 text-white'
+                }`}
+              >
+                {waitingCount + unreadMessages}
+              </span>
+            )}
+          </button>
 
           <span className="w-px h-8 bg-slate-200 mx-0.5 sm:mx-1 flex-none" />
 

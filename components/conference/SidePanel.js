@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  X, Mic, MicOff, Video, VideoOff, UserX, Hand, UserPlus, ChevronDown,
+  X, Mic, MicOff, Video, VideoOff, UserX, Hand, UserPlus, ChevronDown, Lock, LockOpen,
 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
 import useMeetingChat from '@/hooks/useMeetingChat';
@@ -79,6 +79,8 @@ export default function SidePanel({
   onDeny,
   onForceMute,
   onRemove,
+  isLocked,
+  onToggleLock,
   mobileOpen,
   onCloseMobile,
   onUnreadChange,
@@ -151,7 +153,7 @@ export default function SidePanel({
           au-dessus — comme Zoom et Teams. Sur grand écran : colonne de 344 px. */}
       <div
         className={`bg-surface border-t lg:border-t-0 lg:border-l border-slate-200 flex-col min-h-0
-          fixed inset-x-0 bottom-0 h-[78vh] rounded-t-2xl z-40 shadow-overlay
+          fixed inset-x-0 bottom-0 h-sheet pb-safe rounded-t-2xl z-40 shadow-overlay
           lg:static lg:z-auto lg:flex-none lg:inset-auto lg:h-auto lg:w-[344px] lg:rounded-none lg:shadow-none ${
             mobileOpen ? 'flex' : 'hidden lg:flex'
           }`}
@@ -170,6 +172,24 @@ export default function SidePanel({
           open={participantsOpen}
           onToggle={() => setParticipantsOpen((v) => !v)}
           action={
+            <div className="flex items-center gap-2">
+              {/* Le verrouillage a quitte la barre de contrôle sur les petits
+                  ecrans, faute de largeur : il reste accessible ici. Affiche
+                  jusqu'a `sm` exactement, la ou la barre ne le montre plus. */}
+              {isHost && (
+                <button
+                  onClick={onToggleLock}
+                  aria-label={isLocked ? 'Deverrouiller la salle' : 'Verrouiller la salle'}
+                  title={isLocked ? 'Déverrouiller la salle' : 'Verrouiller la salle'}
+                  className={`sm:hidden h-8 w-8 flex-none flex items-center justify-center rounded-sm border transition-colors ${
+                    isLocked
+                      ? 'border-warning-500/40 bg-warning-50 text-warning-500'
+                      : 'border-slate-200 bg-surface text-slate-500 hover:bg-slate-100'
+                  }`}
+                >
+                  {isLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+                </button>
+              )}
             <button
               onClick={onCopyInvite}
               title="Copier le lien d'invitation"
@@ -178,6 +198,7 @@ export default function SidePanel({
               Ajouter
               <UserPlus className="h-3.5 w-3.5 text-brand-500" />
             </button>
+            </div>
           }
         />
 
@@ -356,7 +377,11 @@ function ParticipantsList({
               <MediaState micOn={media.micOn && !p.force_muted} camOn={media.camOn} />
 
               {isHost && p.role !== 'host' && (
-                <div className="flex-none flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                // Toujours visibles la ou il n'y a pas de survol. En
+                // `group-hover` seul, un hôte sur telephone voyait des boutons
+                // qu'il ne pouvait jamais atteindre : il n'y a pas de survol au
+                // doigt, la moderation etait donc purement decorative sur mobile.
+                <div className="flex-none flex items-center gap-1 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                   <button
                     onClick={() => onForceMute?.(p.id)}
                     title={p.force_muted ? 'Réautoriser le micro' : 'Couper le micro'}
