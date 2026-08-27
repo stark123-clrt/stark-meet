@@ -168,6 +168,9 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
 
     setSending(true);
     setDraft('');
+    // Le message est parti : un sélecteur encore ouvert au-dessus d'un
+    // compositeur vide n'aurait plus d'objet.
+    setComposerPickerOpen(false);
     atBottomRef.current = true;
 
     const result = await onSend(content);
@@ -239,13 +242,16 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
 
       <div className="flex-none border-t border-slate-200 p-3">
         <div className="relative flex items-end gap-2">
+          {/* Le sélecteur RESTE ouvert après une insertion : on écrit rarement
+              un seul emoji, et le refermer à chaque clic obligeait à rouvrir le
+              panneau entre deux. Il se ferme au clic en dehors, à Échap (tous
+              deux gérés par le panneau lui-même) et à l'envoi du message. Il est
+              posé au-dessus du compositeur, jamais par-dessus : on garde son
+              texte sous les yeux pendant qu'on pioche. */}
           {composerPickerOpen && (
             <EmojiPicker
               align="left"
-              onSelect={(emoji) => {
-                insertInDraft(emoji);
-                setComposerPickerOpen(false);
-              }}
+              onSelect={insertInDraft}
               onClose={() => setComposerPickerOpen(false)}
             />
           )}
