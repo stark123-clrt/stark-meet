@@ -47,7 +47,8 @@ RUN pip install --no-cache-dir \
     sherpa-onnx \
     opuslib \
     soxr \
-    aiohttp
+    aiohttp \
+    websocket-client
 
 WORKDIR /app
 COPY transcriber/ ./

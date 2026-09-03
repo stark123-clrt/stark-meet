@@ -30,7 +30,25 @@ const ENABLED = process.env.TRANSCRIPTION_ENABLED === 'true';
 // Plafond de flux simultanés. Le service traite tout en parallèle, mais le CPU
 // reste fini : mesuré à RTF 0,437 sur cette machine, soit environ deux
 // locuteurs simultanés en régime continu.
-const MAX_SESSIONS = Number(process.env.TRANSCRIPTION_MAX_SESSIONS) || 3;
+const MAX_SESSIONS = Number(process.env.TRANSCRIPTION_MAX_SESSIONS) || 6;
+
+// Écart de niveau au-delà duquel un flux est considéré comme un écho du flux
+// dominant, et cesse d'être envoyé au moteur.
+//
+// ⚠️ Problème réel, constaté en production : sans casque, le micro d'un
+// participant capte la voix de l'autre par ses haut-parleurs. Les deux flux
+// transcrivaient alors les mêmes mots sous deux noms différents — 62 phrases
+// attribuées à une personne, 1 à l'autre, alors que les deux parlaient autant.
+//
+// Un écho acoustique est toujours nettement plus faible que la voix directe.
+// Comparer les niveaux que l'AudioLevelObserver nous donne déjà suffit donc à
+// les distinguer, sans rien calculer de plus.
+const GATE_MARGIN_DB = Number(process.env.TRANSCRIPTION_GATE_MARGIN_DB) || 12;
+
+// Durée pendant laquelle un flux reste fermé après avoir été jugé dominé. Le
+// détecteur ne parle que toutes les 400 ms : sans rémanence, la porte
+// clignoterait entre deux mesures.
+const GATE_HOLD_MS = Number(process.env.TRANSCRIPTION_GATE_HOLD_MS) || 700;
 
 const SERVICE_PORT = Number(process.env.TRANSCRIBER_PORT) || 8077;
 const RECONNECT_DELAY_MS = 1000;
@@ -61,7 +79,26 @@ const SERVICE_HOST = process.env.TRANSCRIBER_HOST || detectHostGateway();
 const SERVICE_URL = `ws://${SERVICE_HOST}:${SERVICE_PORT}/stream`;
 
 const sessions = new Map(); // producerId -> session
-const stats = { opened: 0, failed: 0, refusedOverCap: 0, packets: 0, reconnects: 0 };
+const stats = { opened: 0, failed: 0, refusedOverCap: 0, packets: 0, gated: 0, reconnects: 0 };
+
+/**
+ * Ferme les flux dominés par un autre, à partir des niveaux mesurés.
+ *
+ * Appelé à chaque relevé de l'AudioLevelObserver. `volumes` est déjà trié du
+ * plus fort au plus faible par mediasoup, mais on ne s'appuie pas dessus.
+ */
+function applyGate(volumes) {
+  if (!Array.isArray(volumes) || volumes.length < 2) return;
+
+  const loudest = Math.max(...volumes.map((entry) => entry.volume));
+  const until = Date.now() + GATE_HOLD_MS;
+
+  for (const { producer, volume } of volumes) {
+    if (loudest - volume < GATE_MARGIN_DB) continue;
+    const session = sessions.get(producer.id);
+    if (session) session.gatedUntil = until;
+  }
+}
 
 /**
  * Ouvre un flux de transcription pour un producteur audio.
@@ -83,6 +120,7 @@ async function startStream({ router, producerId, meetingId, speakerName, partici
     producerId, meetingId, speakerName, participantId,
     transport: null, consumer: null, socket: null,
     reconnects: 0, packets: 0, closed: false,
+    gatedUntil: 0, gatedPackets: 0,
     startedAt: Date.now(),
   };
 
@@ -98,6 +136,13 @@ async function startStream({ router, producerId, meetingId, speakerName, partici
     connectSocket(session, onTranscript);
 
     session.consumer.on('rtp', (packet) => {
+      // Flux dominé par un autre : c'est presque certainement l'écho de la voix
+      // de quelqu'un d'autre, et le transcrire l'attribuerait au mauvais nom.
+      if (Date.now() < session.gatedUntil) {
+        session.gatedPackets += 1;
+        stats.gated += 1;
+        return;
+      }
       // `packet` est le paquet RTP complet, en-tête compris. Le service se
       // charge du dépaquetage : l'en-tête ne fait pas 12 octets en WebRTC.
       if (session.socket && session.socket.readyState === WebSocket.OPEN) {
@@ -224,6 +269,10 @@ function getStats() {
     streams: Array.from(sessions.values()).map((session) => ({
       speaker: session.speakerName,
       packets: session.packets,
+      // Paquets retenus parce qu'un autre flux dominait. Un chiffre du même
+      // ordre que `packets` signale un écho permanent — donc quelqu'un sans
+      // casque, et non un défaut de réglage.
+      gatedPackets: session.gatedPackets,
       reconnects: session.reconnects,
       seconds: Math.round((Date.now() - session.startedAt) / 1000),
       socketOpen: session.socket?.readyState === WebSocket.OPEN,
@@ -234,6 +283,7 @@ function getStats() {
 module.exports = {
   ENABLED,
   MAX_SESSIONS,
+  applyGate,
   startStream,
   stopStream,
   stopMeetingStreams,

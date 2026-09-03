@@ -50,6 +50,18 @@ log = logging.getLogger("streaming")
 
 # ── Réglages ────────────────────────────────────────────────────────────────
 
+# Moteur de reconnaissance : `sherpa` en local, `meta` via l'API distante.
+#
+# Les deux cohabitent dans le service, et toute la chaîne amont leur est
+# commune — seul le dernier étage change de destination. Le repli tient donc
+# dans une variable, sans reconstruire l'image : si l'API tombe, coûte trop
+# cher ou déçoit, on revient au modèle local en trente secondes.
+ASR_ENGINE = os.environ.get("ASR_ENGINE", "sherpa").lower()
+
+# Délai laissé au service distant pour rendre sa dernière phrase avant qu'on ne
+# ferme la connexion. Sans lui, la fin de chaque prise de parole serait coupée.
+META_DRAIN_S = float(os.environ.get("META_DRAIN_S", "1.5"))
+
 MODEL_DIR = os.environ.get("SHERPA_MODEL_DIR", "/models/sherpa-fr")
 NUM_THREADS = int(os.environ.get("SHERPA_THREADS", "2"))
 
@@ -312,12 +324,26 @@ def load_recognizer():
     """
     Charge le transducteur une fois pour tout le processus.
 
+    Sans objet avec le moteur Meta, où le calcul est distant : on ne charge
+    alors aucun modèle et le service démarre en quelques secondes.
+
     sherpa-onnx est prévu pour ça : un moteur, plusieurs flux indépendants. Le
     modèle n'est donc en mémoire qu'une fois, quel que soit le nombre de
     locuteurs — contrairement à Whisper, où chaque processus du pool portait sa
     propre copie de 750 Mio.
     """
     global RECOGNIZER
+    if ASR_ENGINE == "meta":
+        import meta_asr
+
+        if not meta_asr.available():
+            log.warning("META_API_KEY absente — aucune transcription ne sera produite")
+        log.info(
+            "Moteur Meta · %s · mode %s · partiels %s · langue %s",
+            meta_asr.MODEL, meta_asr.MODE, meta_asr.PARTIAL_MODE, meta_asr.LANGUAGE,
+        )
+        return
+
     import sherpa_onnx
 
     directory = MODEL_DIR
@@ -510,7 +536,11 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
     # introduirait une discontinuité à chaque frontière de trame.
     resampler = soxr.ResampleStream(OPUS_RATE, TARGET_RATE, 1, dtype="float32")
 
-    stream = make_stream(session.speaker_name)
+    # Les deux moteurs sont créés plus bas, une fois `emit` défini : la session
+    # Meta démarre un fil de réception qui peut rappeler `emit` immédiatement.
+    stream = None
+    meta = None
+
     pending: dict[int, tuple[int, bytes]] = {}
     expected_seq: int | None = None
     last_ts: int | None = None
@@ -593,12 +623,52 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
         nonlocal vad
         vad = None
 
-    def feed(samples: np.ndarray) -> None:
-        """Injecte du PCM 16 kHz dans le moteur et récolte ce qui en sort."""
+    def emit(kind: str, text: str) -> None:
+        """
+        Filtre et publie une sortie de moteur, quelle que soit sa provenance.
+
+        Partagé entre les deux moteurs : le seuil de mots, la limitation de
+        cadence des hypothèses et le comptage se comportent donc exactement
+        pareil en local et via l'API. Appelé depuis le fil de travail pour
+        sherpa, depuis le fil de réception pour Meta — `publish` traverse la
+        frontière de threads de façon sûre.
+        """
         nonlocal last_text, last_sent
 
+        text = (text or "").strip()
+        if not text:
+            return
+        now = time.monotonic()
+
+        if kind == "final":
+            words = text.split()
+            if len(words) >= MIN_FINAL_WORDS:
+                session.finals += 1
+                publish("final", text)
+            else:
+                # Compté plutôt que jeté en silence : si ce nombre explose, c'est
+                # que le seuil supprime de vraies réponses courtes et non des
+                # hallucinations.
+                session.suppressed += 1
+            last_text = ""
+            last_sent = now
+            return
+
+        if text != last_text and now - last_sent >= PARTIAL_INTERVAL_S:
+            last_text = text
+            last_sent = now
+            publish("partial", text)
+
+    def feed(samples: np.ndarray) -> None:
+        """Injecte du PCM 16 kHz dans le moteur et récolte ce qui en sort."""
         # Le détecteur observe le même audio, en parallèle et sans le retenir.
         watch_voice(samples)
+        session.audio_seconds += len(samples) / TARGET_RATE
+
+        if meta is not None:
+            # Envoi seul : le texte reviendra plus tard sur le fil de réception.
+            meta.feed(samples)
+            return
 
         started = time.perf_counter()
         stream.accept_waveform(TARGET_RATE, samples)
@@ -607,26 +677,12 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
         text = RECOGNIZER.get_result(stream)
         endpoint = RECOGNIZER.is_endpoint(stream)
         session.compute_seconds += time.perf_counter() - started
-        session.audio_seconds += len(samples) / TARGET_RATE
 
-        now = time.monotonic()
         if endpoint:
-            words = text.split()
-            if len(words) >= MIN_FINAL_WORDS:
-                session.finals += 1
-                publish("final", text)
-            elif words:
-                # Compté plutôt que jeté en silence : si ce nombre explose, c'est
-                # que le seuil supprime de vraies réponses courtes et non des
-                # hallucinations.
-                session.suppressed += 1
+            emit("final", text)
             RECOGNIZER.reset(stream)
-            last_text = ""
-            last_sent = now
-        elif text and text != last_text and now - last_sent >= PARTIAL_INTERVAL_S:
-            last_text = text
-            last_sent = now
-            publish("partial", text)
+        elif text:
+            emit("partial", text)
 
     def decode_frame(payload: bytes | None) -> None:
         """Décode une trame, ou la reconstruit si elle est perdue."""
@@ -700,6 +756,24 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
             last_ts = (last_ts + FRAME_SAMPLES_20MS) & 0xFFFFFFFF
         decode_frame(payload)
 
+    # ── Ouverture du moteur ─────────────────────────────────────────────────
+    # Ici et pas plus haut : la session Meta lance un fil de réception qui peut
+    # rappeler `emit` dès la première réponse, et `emit` doit donc exister.
+    if ASR_ENGINE == "meta":
+        import meta_asr
+
+        meta = meta_asr.MetaSession(
+            speaker_name=session.speaker_name,
+            # Le nom du locuteur en premier : c'est le mot que tout modèle
+            # écorche le plus, et mediasoup nous le donne à l'ouverture.
+            keywords=[session.speaker_name] + (HOTWORDS_EXTRA.split() if HOTWORDS_EXTRA else []),
+            on_partial=lambda text: emit("partial", text),
+            on_final=lambda text: emit("final", text),
+        )
+        meta.connect()
+    else:
+        stream = make_stream(session.speaker_name)
+
     while not session.stop.is_set():
         try:
             packet = session.packets.get(timeout=0.5)
@@ -740,13 +814,17 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
 
     # Fin de session : on laisse le moteur produire sa dernière phrase.
     try:
-        stream.input_finished()
-        while RECOGNIZER.is_ready(stream):
-            RECOGNIZER.decode_stream(stream)
-        tail = RECOGNIZER.get_result(stream)
-        if tail.strip():
-            session.finals += 1
-            publish("final", tail)
+        if meta is not None:
+            # Le service tient sa propre file : on lui laisse un instant pour
+            # renvoyer ce qu'il a en cours avant de couper la connexion, sinon
+            # la dernière phrase de la réunion serait perdue.
+            time.sleep(META_DRAIN_S)
+            meta.close()
+        elif stream is not None:
+            stream.input_finished()
+            while RECOGNIZER.is_ready(stream):
+                RECOGNIZER.decode_stream(stream)
+            emit("final", RECOGNIZER.get_result(stream))
     except Exception as error:
         log.warning("Fin de flux · %s: %s", session.speaker_name, error)
 
@@ -1067,8 +1145,11 @@ async def stream_endpoint(websocket: WebSocket) -> None:
 async def health() -> dict:
     return {
         "status": "ok",
-        "engine": "sherpa-onnx",
-        "model": MODEL_DIR,
+        "engine": ASR_ENGINE,
+        "model": os.environ.get("META_MODEL", "muse-voice-transcribe-1.0") if ASR_ENGINE == "meta" else MODEL_DIR,
+        # Confirme que la clé est bien passée au conteneur, sans jamais en
+        # révéler la valeur.
+        "metaKeyConfigured": bool(os.environ.get("META_API_KEY")),
         "threads": NUM_THREADS,
         "decoding": DECODING,
         "maxActivePaths": MAX_ACTIVE_PATHS,

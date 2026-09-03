@@ -373,6 +373,12 @@ function onVolumes(meetingId, volumes) {
   const room = rooms.get(meetingId);
   if (!room) return;
 
+  // Écho acoustique : quand un flux est nettement plus faible qu'un autre au
+  // même instant, c'est presque toujours la voix du second captée par le micro
+  // du premier. On cesse alors de l'envoyer au moteur, faute de quoi la même
+  // phrase serait transcrite deux fois sous deux noms différents.
+  transcription.applyGate(volumes);
+
   const now = Date.now();
   for (const { producer } of volumes) {
     lastHeardAt.set(producer.id, now);
