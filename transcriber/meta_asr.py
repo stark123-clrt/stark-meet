@@ -72,6 +72,11 @@ MAX_RECONNECTS = int(os.environ.get("META_MAX_RECONNECTS", "5"))
 # secondes suffisent : au-delà, mieux vaut un trou qu'un décalage permanent.
 BACKLOG_S = float(os.environ.get("META_BACKLOG_S", "2.0"))
 
+# Journalise les N premiers événements reçus, en entier. Le schéma exact n'étant
+# pas spécifié dans la documentation, c'est le seul moyen de le constater plutôt
+# que de le supposer. Mettre 0 en usage normal.
+DEBUG_EVENTS = int(os.environ.get("META_DEBUG_EVENTS", "0"))
+
 
 def available() -> bool:
     """Le moteur est-il utilisable ? Sans clé, inutile d'essayer."""
@@ -98,6 +103,7 @@ class MetaSession:
         self._backlog = deque()
         self._backlog_bytes = 0
         self._unknown_logged = False
+        self._debug_left = DEBUG_EVENTS
 
         self.reconnects = 0
         self.renewals = 0
@@ -255,35 +261,46 @@ class MetaSession:
         """
         Route un événement vers les rappels.
 
-        Tolérant à dessein : le schéma exact n'étant pas entièrement spécifié,
-        on cherche le type et le texte parmi plusieurs clés plausibles plutôt
-        que d'échouer sur un nom inattendu.
+        ⚠️ L'ordre compte, et la première version s'y est trompée. On extrait le
+        texte AVANT de filtrer par type d'événement : un `speechComplete` était
+        écarté d'office comme simple fin de tour, alors que c'est lui qui portait
+        la phrase définitive. Résultat, tout restait en hypothèse grise et rien
+        ne se figeait jamais à l'écran.
+
+        La règle est donc : tout événement porteur de texte est publié, et seul
+        le caractère définitif se déduit des drapeaux.
         """
+        if self._debug_left > 0:
+            self._debug_left -= 1
+            log.info("Événement Meta brut : %s", event)
+
         kind = (event.get("type") or event.get("event") or "").lower()
-
-        if kind in ("speechstart", "speechend", "audioprogress", "speaker", "speechcomplete"):
-            return
-
-        if "transcript" not in kind and "text" not in event:
-            if not self._unknown_logged:
-                self._unknown_logged = True
-                log.info("Événement Meta non reconnu (premier seulement) : %s", event)
-            return
 
         text = (
             event.get("text")
             or event.get("transcript")
             or (event.get("result") or {}).get("text")
             or ""
-        ).strip()
+        )
+        text = text.strip() if isinstance(text, str) else ""
+
         if not text:
+            # Événement de contrôle sans texte : rien à publier.
+            if kind not in ("speechstart", "speechend", "audioprogress", "speaker",
+                            "speechcomplete", "ready", "ack") and not self._unknown_logged:
+                self._unknown_logged = True
+                log.info("Événement Meta non reconnu (premier seulement) : %s", event)
             return
 
         final = bool(
             event.get("isFinal")
             or event.get("final")
-            or "final" in kind
             or event.get("stability") == "FINAL"
+            or "final" in kind
+            or "complete" in kind
+            # Certaines API signalent l'inverse : un partiel explicitement faux.
+            or event.get("isPartial") is False
+            or event.get("partial") is False
         )
         (self.on_final if final else self.on_partial)(text)
 
