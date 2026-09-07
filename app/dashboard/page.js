@@ -15,6 +15,7 @@ import MeetingsSection from '@/components/dashboard/MeetingsSection';
 import HistorySection from '@/components/dashboard/HistorySection';
 import ContactsSection from '@/components/dashboard/ContactsSection';
 import SettingsSection from '@/components/dashboard/SettingsSection';
+import TranscriptDialog from '@/components/dashboard/TranscriptDialog';
 
 const NAV = [
   { key: 'meetings', label: 'Réunions', icon: Video, title: 'Vos réunions' },
@@ -30,6 +31,7 @@ export default function DashboardPage() {
   const [profile, setProfile] = useState(null);
   const [meetings, setMeetings] = useState([]);
   const [participants, setParticipants] = useState([]);
+  const [transcribedMeetings, setTranscribedMeetings] = useState(() => new Set());
   const [loading, setLoading] = useState(true);
 
   const [section, setSection] = useState('meetings');
@@ -38,6 +40,7 @@ export default function DashboardPage() {
   const [inviteFor, setInviteFor] = useState(null);
   const [creatingInstant, setCreatingInstant] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
+  const [transcriptFor, setTranscriptFor] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -62,6 +65,7 @@ export default function DashboardPage() {
 
     if (rows.length === 0) {
       setParticipants([]);
+      setTranscribedMeetings(new Set());
       return;
     }
 
@@ -74,6 +78,18 @@ export default function DashboardPage() {
       .in('meeting_id', rows.map((m) => m.id));
 
     setParticipants(participantRows || []);
+
+    // Quelles réunions ont une transcription à relire. On ne demande que la
+    // colonne meeting_id et on déduplique ici : PostgREST ne sait pas faire de
+    // DISTINCT, et une requête de comptage par réunion en ferait autant
+    // d'allers-retours. À basculer sur une vue agrégée le jour où l'historique
+    // se compte en dizaines de milliers de phrases.
+    const { data: transcriptRows } = await supabase
+      .from('meeting_transcript_segments')
+      .select('meeting_id')
+      .in('meeting_id', rows.map((m) => m.id));
+
+    setTranscribedMeetings(new Set((transcriptRows || []).map((r) => r.meeting_id)));
   }, []);
 
   useEffect(() => {
@@ -409,6 +425,8 @@ export default function DashboardPage() {
               meetings={past}
               participantsByMeeting={participantsByMeeting}
               timeZone={timeZone}
+              transcribedMeetings={transcribedMeetings}
+              onOpenTranscript={setTranscriptFor}
             />
           )}
 
@@ -434,6 +452,14 @@ export default function DashboardPage() {
           defaultWaitingRoom={preferences.waitingRoomDefault}
           onClose={() => { setShowCreate(false); setInviteFor(null); }}
           onCreated={handleCreated}
+        />
+      )}
+
+      {transcriptFor && (
+        <TranscriptDialog
+          meeting={transcriptFor}
+          timeZone={timeZone}
+          onClose={() => setTranscriptFor(null)}
         />
       )}
 

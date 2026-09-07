@@ -34,6 +34,10 @@ services:
       - MEDIASOUP_ANNOUNCED_IP=${MEDIASOUP_ANNOUNCED_IP}
       - MEDIASOUP_MIN_PORT=40000
       - MEDIASOUP_MAX_PORT=40199
+      # Persistance du transcript. Sans ces deux variables la reunion fonctionne
+      # normalement, mais rien n'est ecrit et l'historique reste vide.
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       # Un worker par cœur par défaut. À plafonner si le VPS partage son CPU.
       # - MEDIASOUP_WORKERS=2
     restart: unless-stopped

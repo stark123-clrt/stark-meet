@@ -5,7 +5,9 @@ import { formatShortDate, formatDuration, meetingDuration } from '@/lib/datetime
 
 const COLUMNS = 'grid-cols-[2.2fr_1fr_.9fr_.8fr_150px]';
 
-export default function HistorySection({ meetings, participantsByMeeting, timeZone }) {
+export default function HistorySection({
+  meetings, participantsByMeeting, timeZone, transcribedMeetings, onOpenTranscript,
+}) {
   if (meetings.length === 0) {
     return (
       <div className="max-w-[1080px] bg-surface border border-slate-200 rounded-lg p-12 text-center">
@@ -28,7 +30,7 @@ export default function HistorySection({ meetings, participantsByMeeting, timeZo
               <span>Date</span>
               <span>Durée</span>
               <span>Participants</span>
-              <span>Compte-rendu</span>
+              <span>Transcription</span>
             </div>
 
             {meetings.map((meeting) => {
@@ -51,16 +53,28 @@ export default function HistorySection({ meetings, participantsByMeeting, timeZo
                   <span className="text-slate-700">{people.length}</span>
                   <div className="flex justify-start">
                     {/* Le template propose ici « Voir le rapport » / « Rédaction IA… ».
-                        L'enregistrement et le résumé automatique n'existent pas encore :
-                        on affiche l'état réel plutôt qu'un bouton qui ne mènerait
-                        nulle part ou une promesse que rien ne tient. */}
-                    <span
-                      className="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold tracking-overline uppercase text-slate-500 bg-slate-100 rounded-xs px-2 py-1"
-                      title="Le compte-rendu automatique arrivera avec le plan Équipe."
-                    >
-                      <FileText className="h-3 w-3" />
-                      Aucun
-                    </span>
+                        Le RÉSUMÉ automatique n'existe toujours pas, mais la
+                        transcription, elle, est désormais conservée : on ouvre le
+                        texte réel plutôt qu'une promesse que rien ne tient.
+                        Sans phrase enregistrée, l'état reste explicite au lieu
+                        d'un bouton qui ne mènerait nulle part. */}
+                    {transcribedMeetings?.has(meeting.id) ? (
+                      <button
+                        onClick={() => onOpenTranscript?.(meeting)}
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm border border-slate-200 text-[13px] font-medium text-slate-700 hover:text-slate-950 hover:bg-slate-100 transition-colors"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        Voir
+                      </button>
+                    ) : (
+                      <span
+                        className="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold tracking-overline uppercase text-slate-500 bg-slate-100 rounded-xs px-2 py-1"
+                        title="Aucune parole enregistrée pour cette réunion."
+                      >
+                        <FileText className="h-3 w-3" />
+                        Aucune
+                      </span>
+                    )}
                   </div>
                 </div>
               );

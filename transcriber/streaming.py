@@ -151,13 +151,28 @@ VAD_WINDOW = 512
 
 # Mots minimum pour qu'une phrase soit publiée.
 #
-# Les hallucinations sortent en un ou deux mots isolés — « Tout », « La »,
-# « Madame », « Dans ». Ce filtre les élimine d'un coup.
+# Le seuil dépend du moteur, parce que le défaut qu'il corrige n'existe que
+# d'un côté :
 #
-# ⚠️ Il a un coût réel : « Oui », « D'accord », « Merci », « Exactement » sont
-# des réponses légitimes en réunion, et ce seuil les supprime aussi. Le mettre à
-# 1 le désactive.
-MIN_FINAL_WORDS = int(os.environ.get("MIN_FINAL_WORDS", "3"))
+#   sherpa — le transducteur streaming décide lui-même de ses fins de segment
+#     et hallucine des mots isolés sur du bruit : « Tout », « La », « Madame »,
+#     « Dans ». Le seuil de 3 les élimine d'un coup.
+#
+#   meta — chaque phrase définitive vient d'un événement `speechComplete` du
+#     service, qui a déjà jugé le tour de parole terminé. Il n'y a pas de flux
+#     d'un ou deux mots à filtrer, et le seuil ne supprimait donc que de vraies
+#     réponses.
+#
+# ⚠️ Le coût était réel et visible : « Oui », « D'accord », « Merci »,
+# « Exactement » sont les réponses les plus fréquentes d'une réunion. Sous le
+# seuil, la phrase définitive n'était jamais publiée — l'hypothèse restait
+# affichée en gris puis disparaissait, remplacée par la suivante, sans jamais se
+# figer. C'est exactement ce que remontait le test en conditions réelles.
+#
+# Réglable dans les deux sens par la variable d'environnement ; 1 le désactive.
+MIN_FINAL_WORDS = int(
+    os.environ.get("MIN_FINAL_WORDS", "1" if ASR_ENGINE == "meta" else "3")
+)
 
 # Cadence maximale d'émission des hypothèses. `get_result` renvoie le texte
 # complet du segment en cours à CHAQUE trame : sans limitation, on enverrait

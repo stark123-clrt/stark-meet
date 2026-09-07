@@ -28,6 +28,7 @@ const mediasoup = require('mediasoup');
 // L'ancien module `transcription-fork.js` (PlainTransport UDP + ffmpeg +
 // Whisper) reste dans le dépôt à titre de repli, mais n'est plus chargé.
 const transcription = require('./transcription-stream');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const server = http.createServer(app);
@@ -94,6 +95,103 @@ const transcripts = new Map(); // meetingId -> { finals: [], partials: Map }
 // persistance en base, qui permettra aussi de relire une réunion passée.
 const TRANSCRIPT_HISTORY_LIMIT = Number(process.env.TRANSCRIPT_HISTORY_LIMIT) || 20000;
 
+// ── Persistance du transcript ───────────────────────────────────────────────
+// La mémoire ci-dessus sert la réunion en cours ; la base sert tout ce qui
+// vient après. Seules les phrases DÉFINITIVES descendent : une hypothèse grise
+// n'a de sens que tant qu'on parle.
+//
+// L'écriture passe par la clé de SERVICE, qui contourne RLS. C'est nécessaire :
+// le SFU n'agit au nom d'aucun utilisateur connecté, et la politique de lecture
+// de `meeting_transcript_segments` n'accorde aucune écriture.
+//
+// ⚠️ Cette clé ne doit jamais porter le préfixe NEXT_PUBLIC_ : elle donne un
+// accès total à la base.
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+const transcriptDb = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+  : null;
+
+if (!transcriptDb) {
+  console.warn(
+    '⚠️ Transcript non persisté : NEXT_PUBLIC_SUPABASE_URL ou '
+    + 'SUPABASE_SERVICE_ROLE_KEY manquant. La réunion fonctionne, mais rien '
+    + "n'apparaîtra dans l'historique."
+  );
+}
+
+// Écriture par lots plutôt qu'une requête par phrase. Une réunion à quatre
+// produit plusieurs phrases par seconde ; autant d'allers-retours HTTP
+// ralentiraient le fil qui diffuse aussi le média.
+//
+// La file est indexée par `segmentId` : quand le LLM renvoie la version
+// corrigée d'une phrase encore en attente, elle REMPLACE la version brute et
+// une seule ligne part en base.
+const TRANSCRIPT_FLUSH_MS = Number(process.env.TRANSCRIPT_FLUSH_MS) || 5000;
+const pendingSegments = new Map(); // meetingId -> Map<segmentId, row>
+
+function queueSegment(meetingId, segment) {
+  if (!transcriptDb) return;
+
+  // Repli quand le transcripteur ne fournit pas de clé (transcripteur externe
+  // par la route HTTP) : sans identifiant stable, chaque phrase est sa propre
+  // ligne, ce qui reste correct — seul le remplacement par le LLM est perdu.
+  const key = segment.segmentId
+    || `${segment.participantId || 'anon'}-${segment.spokenAt}`;
+
+  if (!pendingSegments.has(meetingId)) pendingSegments.set(meetingId, new Map());
+  pendingSegments.get(meetingId).set(key, {
+    meeting_id: meetingId,
+    segment_id: key,
+    participant_id: segment.participantId,
+    display_name: segment.displayName,
+    text: segment.text,
+    raw_text: segment.rawText,
+    corrected: segment.corrected,
+    spoken_at: new Date(segment.spokenAt * 1000).toISOString(),
+  });
+}
+
+async function flushSegments(meetingId) {
+  if (!transcriptDb) return;
+
+  const ids = meetingId ? [meetingId] : Array.from(pendingSegments.keys());
+  for (const id of ids) {
+    const queue = pendingSegments.get(id);
+    if (!queue || queue.size === 0) continue;
+
+    // Vidée AVANT l'appel : les phrases prononcées pendant l'écriture partiront
+    // au tour suivant au lieu d'être envoyées deux fois.
+    const rows = Array.from(queue.values());
+    queue.clear();
+
+    const { error } = await transcriptDb
+      .from('meeting_transcript_segments')
+      .upsert(rows, { onConflict: 'meeting_id,segment_id' });
+
+    if (error) {
+      // Remises en file, mais SANS écraser une version plus récente arrivée
+      // entre-temps : une correction du LLM prime toujours sur le texte brut
+      // qu'elle remplace.
+      for (const row of rows) {
+        if (!queue.has(row.segment_id)) queue.set(row.segment_id, row);
+      }
+      console.error('⚠️ Transcript non enregistré:', error.message);
+    }
+  }
+}
+
+if (transcriptDb) {
+  const timer = setInterval(() => {
+    flushSegments().catch((error) => console.error('⚠️ Flush transcript:', error));
+  }, TRANSCRIPT_FLUSH_MS);
+  // Ne doit pas maintenir le processus en vie à lui seul.
+  timer.unref();
+}
+
 function transcriptStore(meetingId) {
   if (!transcripts.has(meetingId)) {
     transcripts.set(meetingId, { finals: [], partials: new Map() });
@@ -157,6 +255,10 @@ function recordTranscript({
         if (store.finals.length > TRANSCRIPT_HISTORY_LIMIT) store.finals.shift();
       }
     }
+    // Durabilité : la mémoire ci-dessus sert la réunion en cours, la base sert
+    // l'historique. Mise en file ici, écrite par lots — voir flushSegments.
+    if (text.trim()) queueSegment(meetingId, segment);
+
     // L'hypothèse de ce locuteur vient d'être confirmée : elle n'a plus lieu
     // d'être affichée en gris à côté du texte définitif.
     store.partials.delete(segment.participantId);
@@ -1096,6 +1198,15 @@ function cleanupPeer(socket) {
 
     room.router.close();
     rooms.delete(socket.meetingId);
+
+    // Dernier vidage AVANT d'oublier la salle : sans lui, les phrases dites
+    // dans les secondes précédant le départ du dernier participant seraient
+    // perdues — précisément la fin de réunion, souvent la plus utile.
+    const closing = socket.meetingId;
+    flushSegments(closing)
+      .catch((error) => console.error('⚠️ Flush final:', error))
+      .finally(() => pendingSegments.delete(closing));
+
     transcripts.delete(socket.meetingId);
     console.log('🗑️ Room supprimée:', socket.meetingId);
   }

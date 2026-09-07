@@ -210,6 +210,70 @@ begin
 end $$;
 
 -- ============================================================================
+-- meeting_transcript_segments (transcription persistée)
+-- ============================================================================
+-- Jusqu'ici le transcript ne vivait qu'en mémoire dans le SFU : il disparaissait
+-- à la fermeture de la salle et au moindre redéploiement, et l'espace admin
+-- n'avait donc rien à afficher après la réunion.
+--
+-- Seules les phrases DÉFINITIVES sont écrites. Les hypothèses grises n'ont de
+-- sens que pendant la réunion, où elles transitent par Socket.io.
+--
+-- segment_id est la clé stable produite par le transcripteur
+-- (`<producerId>-<n>`). Le même segment est publié deux fois quand le LLM le
+-- corrige : l'unicité sur (meeting_id, segment_id) transforme la seconde
+-- écriture en remplacement au lieu d'un doublon.
+
+create table if not exists meeting_transcript_segments (
+  id uuid primary key default gen_random_uuid(),
+  meeting_id uuid not null references meetings(id) on delete cascade,
+  segment_id text not null,
+  participant_id text,
+  display_name text not null,
+  text text not null,
+  -- Texte tel qu'entendu, conservé quand le LLM a corrigé, pour pouvoir revenir
+  -- à la source si une correction s'avère fautive.
+  raw_text text,
+  corrected boolean not null default false,
+  -- Instant de PRONONCIATION, pas d'arrivée : deux locuteurs dont les flux
+  -- n'avancent pas au même rythme verraient sinon une réponse précéder sa
+  -- question. C'est la clé de tri à la relecture.
+  spoken_at timestamptz not null,
+  created_at timestamptz default now(),
+  constraint meeting_transcript_segments_unique unique (meeting_id, segment_id)
+);
+
+alter table meeting_transcript_segments enable row level security;
+
+-- ⚠️ Politique DÉLIBÉRÉMENT plus stricte que les autres tables du schéma.
+-- Un transcript est le contenu même de la conversation : le « Public can view
+-- all » utilisé ailleurs exposerait toutes les réunions de tous les comptes à
+-- la clé anonyme. Seuls l'hôte et les participants identifiés lisent, et
+-- personne n'écrit avec cette clé — le SFU passe par la clé de service, qui
+-- contourne RLS.
+--
+-- Un invité anonyme (guest_id) ne relit pas : il n'a pas de compte, donc pas
+-- d'espace admin. Pendant la réunion il reçoit tout par Socket.io comme avant.
+
+create policy "Host and members can view transcript"
+  on meeting_transcript_segments for select
+  using (
+    exists (
+      select 1 from meetings m
+      where m.id = meeting_transcript_segments.meeting_id
+        and m.host_id = auth.uid()
+    )
+    or exists (
+      select 1 from meeting_participants p
+      where p.meeting_id = meeting_transcript_segments.meeting_id
+        and p.profile_id = auth.uid()
+    )
+  );
+
+create index if not exists idx_transcript_segments_meeting
+  on meeting_transcript_segments(meeting_id, spoken_at);
+
+-- ============================================================================
 -- Realtime publication
 -- ============================================================================
 -- ⚠️ L'application ne dépend PLUS de Supabase Realtime. Son websocket n'est
