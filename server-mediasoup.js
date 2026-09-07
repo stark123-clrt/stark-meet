@@ -64,6 +64,13 @@ app.get('/transcription/stats', (req, res) => {
   res.json({
     ...transcription.getStats(),
     callbackConfigured: !!process.env.TRANSCRIBER_SECRET,
+    transcriptPersistence: !transcriptDb
+      ? 'non configurée (variables Supabase absentes)'
+      : persistenceDisabled
+        ? 'désactivée après échecs répétés'
+        : 'active',
+    transcriptPending: Array.from(pendingSegments.values())
+      .reduce((sum, queue) => sum + queue.size, 0),
     transcribedMeetings: transcripts.size,
     confirmedSegments: Array.from(transcripts.values()).reduce((sum, s) => sum + s.finals.length, 0),
     now: new Date().toISOString(),
@@ -131,10 +138,28 @@ if (!transcriptDb) {
 // corrigée d'une phrase encore en attente, elle REMPLACE la version brute et
 // une seule ligne part en base.
 const TRANSCRIPT_FLUSH_MS = Number(process.env.TRANSCRIPT_FLUSH_MS) || 5000;
+
+// Délai au-delà duquel une écriture est abandonnée. Sans lui, une base
+// injoignable laisse la requête pendante indéfiniment et le tour suivant en
+// ouvre une autre par-dessus.
+const TRANSCRIPT_TIMEOUT_MS = Number(process.env.TRANSCRIPT_TIMEOUT_MS) || 10000;
+
+// Plafond de la file d'attente, par réunion. Une base en panne ne doit pas
+// faire enfler la mémoire du SFU ni gonfler le lot suivant sans limite.
+const TRANSCRIPT_QUEUE_MAX = Number(process.env.TRANSCRIPT_QUEUE_MAX) || 500;
+
+// Nombre d'échecs consécutifs après lequel on cesse de réessayer. La
+// transcription est un CONFORT ; le média est le service. Une base injoignable
+// doit coûter des phrases perdues, jamais une réunion dégradée.
+const TRANSCRIPT_MAX_FAILURES = 3;
+
 const pendingSegments = new Map(); // meetingId -> Map<segmentId, row>
+let flushInFlight = false;         // une seule écriture à la fois
+let flushFailures = 0;
+let persistenceDisabled = false;
 
 function queueSegment(meetingId, segment) {
-  if (!transcriptDb) return;
+  if (!transcriptDb || persistenceDisabled) return;
 
   // Repli quand le transcripteur ne fournit pas de clé (transcripteur externe
   // par la route HTTP) : sans identifiant stable, chaque phrase est sa propre
@@ -143,7 +168,15 @@ function queueSegment(meetingId, segment) {
     || `${segment.participantId || 'anon'}-${segment.spokenAt}`;
 
   if (!pendingSegments.has(meetingId)) pendingSegments.set(meetingId, new Map());
-  pendingSegments.get(meetingId).set(key, {
+  const queue = pendingSegments.get(meetingId);
+
+  // Au plafond, on sacrifie la phrase la plus ancienne. Les dernières minutes
+  // valent mieux que les premières quand il faut choisir.
+  if (queue.size >= TRANSCRIPT_QUEUE_MAX && !queue.has(key)) {
+    queue.delete(queue.keys().next().value);
+  }
+
+  queue.set(key, {
     meeting_id: meetingId,
     segment_id: key,
     participant_id: segment.participantId,
@@ -155,33 +188,101 @@ function queueSegment(meetingId, segment) {
   });
 }
 
+async function writeBatch(rows) {
+  const { error } = await transcriptDb
+    .from('meeting_transcript_segments')
+    .upsert(rows, { onConflict: 'meeting_id,segment_id' })
+    .abortSignal(AbortSignal.timeout(TRANSCRIPT_TIMEOUT_MS));
+  return error;
+}
+
 async function flushSegments(meetingId) {
-  if (!transcriptDb) return;
+  if (!transcriptDb || persistenceDisabled) return;
 
-  const ids = meetingId ? [meetingId] : Array.from(pendingSegments.keys());
-  for (const id of ids) {
-    const queue = pendingSegments.get(id);
-    if (!queue || queue.size === 0) continue;
+  // ⚠️ Verrou indispensable. `setInterval` ne se soucie pas de savoir si le
+  // tour précédent est terminé : sur une base lente, les écritures
+  // s'empilaient, chacune tenant une connexion, et le processus qui achemine
+  // aussi l'audio et la vidéo s'en trouvait ralenti.
+  if (flushInFlight) return;
+  flushInFlight = true;
 
-    // Vidée AVANT l'appel : les phrases prononcées pendant l'écriture partiront
-    // au tour suivant au lieu d'être envoyées deux fois.
-    const rows = Array.from(queue.values());
-    queue.clear();
+  try {
+    const ids = meetingId ? [meetingId] : Array.from(pendingSegments.keys());
+    for (const id of ids) {
+      const queue = pendingSegments.get(id);
+      if (!queue || queue.size === 0) continue;
 
-    const { error } = await transcriptDb
-      .from('meeting_transcript_segments')
-      .upsert(rows, { onConflict: 'meeting_id,segment_id' });
+      // Vidée AVANT l'appel : les phrases prononcées pendant l'écriture
+      // partiront au tour suivant au lieu d'être envoyées deux fois.
+      const rows = Array.from(queue.values());
+      queue.clear();
 
-    if (error) {
+      let error;
+      try {
+        error = await writeBatch(rows);
+      } catch (thrown) {
+        error = thrown;  // délai dépassé, DNS, TLS
+      }
+
+      if (!error) {
+        flushFailures = 0;
+        continue;
+      }
+
+      flushFailures += 1;
+      // Journalisé une seule fois par série : répéter toutes les 5 s noierait
+      // les logs du SFU, qui servent aussi à diagnostiquer le média.
+      if (flushFailures === 1) {
+        console.error('⚠️ Transcript non enregistré:', error.message);
+      }
+
+      if (flushFailures >= TRANSCRIPT_MAX_FAILURES) {
+        persistenceDisabled = true;
+        pendingSegments.clear();
+        console.error(
+          `⚠️ Persistance du transcript DÉSACTIVÉE après ${TRANSCRIPT_MAX_FAILURES} `
+          + 'échecs consécutifs. Les réunions continuent normalement, le texte '
+          + "s'affiche en direct, mais l'historique restera vide jusqu'au "
+          + 'prochain redémarrage. Vérifie NEXT_PUBLIC_SUPABASE_URL, '
+          + 'SUPABASE_SERVICE_ROLE_KEY et la présence de la table.'
+        );
+        return;
+      }
+
       // Remises en file, mais SANS écraser une version plus récente arrivée
       // entre-temps : une correction du LLM prime toujours sur le texte brut
-      // qu'elle remplace.
+      // qu'elle remplace. Et jamais au-delà du plafond, sinon un échec durable
+      // ferait grossir le lot suivant à chaque tour.
       for (const row of rows) {
+        if (queue.size >= TRANSCRIPT_QUEUE_MAX) break;
         if (!queue.has(row.segment_id)) queue.set(row.segment_id, row);
       }
-      console.error('⚠️ Transcript non enregistré:', error.message);
     }
+  } finally {
+    flushInFlight = false;
   }
+}
+
+// Sonde au démarrage. Sans elle, une variable erronée ou une table absente ne
+// se voyait qu'après une vraie réunion, en constatant un historique vide — le
+// pire moment pour l'apprendre.
+if (transcriptDb) {
+  transcriptDb
+    .from('meeting_transcript_segments')
+    .select('id', { count: 'exact', head: true })
+    .abortSignal(AbortSignal.timeout(TRANSCRIPT_TIMEOUT_MS))
+    .then(({ error, count }) => {
+      if (error) {
+        console.error(
+          '⚠️ Persistance du transcript INJOIGNABLE au démarrage:', error.message,
+          '- vérifie NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,',
+          'et que la table meeting_transcript_segments existe.'
+        );
+      } else {
+        console.log(`✅ Persistance du transcript active (${count ?? 0} phrases en base)`);
+      }
+    })
+    .catch((error) => console.error('⚠️ Sonde transcript:', error.message));
 }
 
 if (transcriptDb) {
