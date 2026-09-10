@@ -65,7 +65,9 @@ app.get('/transcription/stats', (req, res) => {
     ...transcription.getStats(),
     callbackConfigured: !!process.env.TRANSCRIBER_SECRET,
     transcriptPersistence: !transcriptDb
-      ? 'non configurée (variables Supabase absentes)'
+      ? (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+        ? 'en échec (client Supabase impossible à créer, voir les logs)'
+        : 'non configurée (variables Supabase absentes)')
       : persistenceDisabled
         ? 'désactivée après échecs répétés'
         : 'active',
@@ -116,13 +118,36 @@ const TRANSCRIPT_HISTORY_LIMIT = Number(process.env.TRANSCRIPT_HISTORY_LIMIT) ||
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
-const transcriptDb = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+// ⚠️ Deux protections, et chacune a coûté une panne de production.
+//
+// 1. `transport: ws`. supabase-js construit un client Realtime DANS son
+//    constructeur, et ce client exige un WebSocket. Node 18 — celui du
+//    conteneur — n'en a pas de global (il n'apparaît qu'en Node 22) : sans
+//    transport fourni, `createClient` lève une exception au chargement du
+//    module et le SFU entier refuse de démarrer. On n'utilise jamais Realtime
+//    ici, mais le constructeur l'exige quand même. `ws` est déjà une
+//    dépendance du projet.
+//
+// 2. Le try/catch. La persistance est une fonction OPTIONNELLE ; le SFU porte
+//    tout le média. Une erreur ici doit coûter l'historique, jamais les
+//    réunions. Sans lui, un défaut de cette bibliothèque — ou sa prochaine
+//    exigence de version — ferait de nouveau tomber le service entier.
+let transcriptDb = null;
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  try {
+    transcriptDb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },
-    })
-  : null;
+      realtime: { transport: require('ws') },
+    });
+  } catch (error) {
+    console.error(
+      '⚠️ Persistance du transcript désactivée : client Supabase impossible à '
+      + 'créer. Les réunions fonctionnent normalement.', error.message
+    );
+  }
+}
 
-if (!transcriptDb) {
+if (!transcriptDb && !(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)) {
   console.warn(
     '⚠️ Transcript non persisté : NEXT_PUBLIC_SUPABASE_URL ou '
     + 'SUPABASE_SERVICE_ROLE_KEY manquant. La réunion fonctionne, mais rien '
