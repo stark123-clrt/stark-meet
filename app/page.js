@@ -85,7 +85,7 @@ function AppPreview() {
       <div className="flex-none flex items-center gap-3">
         <span className="w-2 h-2 rounded-full bg-brand-500" />
         <span className="text-white/90 text-[13px] font-semibold">Point d&apos;équipe hebdo</span>
-        <span className="font-mono text-[11px] text-white/45 border border-white/15 rounded px-2 py-0.5">XKR-42D</span>
+        <span className="font-mono text-[11px] text-white/[0.45] border border-white/[0.15] rounded px-2 py-0.5">XKR-42D</span>
         <span className="ml-auto flex items-center gap-1.5 font-mono text-[10px] font-bold text-success-500">
           <span className="w-1.5 h-1.5 rounded-full bg-success-500" /> EN DIRECT
         </span>
@@ -105,7 +105,7 @@ function AppPreview() {
               >
                 {initialsOf(name)}
               </span>
-              <span className="absolute left-2.5 bottom-2 text-[11px] text-white/85">{name}</span>
+              <span className="absolute left-2.5 bottom-2 text-[11px] text-white/[0.85]">{name}</span>
               {index === 0 && (
                 <span className="absolute inset-0 rounded-lg border-2 border-success-500 pointer-events-none" />
               )}

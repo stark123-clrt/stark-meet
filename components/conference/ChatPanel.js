@@ -380,7 +380,7 @@ function MessageRow({
                 title={reaction.names.join(', ')}
                 className={`flex items-center gap-1 h-6 px-1.5 rounded-full text-[12px] border transition-colors ${
                   reaction.mine
-                    ? 'bg-brand-500/15 border-brand-500/45 text-brand-500'
+                    ? 'bg-brand-500/[0.15] border-brand-500/[0.45] text-brand-500'
                     : 'bg-slate-100 border-transparent text-slate-700 hover:bg-slate-200'
                 }`}
               >

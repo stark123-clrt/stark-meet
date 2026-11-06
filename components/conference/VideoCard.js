@@ -264,7 +264,7 @@ export default function VideoCard({
           {/* Niveau audio, en bas à droite comme dans le template. */}
           <span
             className={`absolute right-3 bottom-3 sm:right-5 sm:bottom-[18px] z-20 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-              isSpeaking ? 'bg-brand-500 text-white' : 'bg-black/45 text-white/60'
+              isSpeaking ? 'bg-brand-500 text-white' : 'bg-black/[0.45] text-white/60'
             }`}
             title={isSpeaking ? 'Parle en ce moment' : 'Niveau audio'}
           >
@@ -294,7 +294,7 @@ export default function VideoCard({
       ) : (
         <>
           {/* Étiquette du nom en pastille sombre, comme dans le template. */}
-          <span className="absolute left-2 bottom-2 max-w-[calc(100%-52px)] z-20 px-2.5 py-1 rounded-full bg-black/55 text-[11px] sm:text-[11.5px] font-medium text-white truncate">
+          <span className="absolute left-2 bottom-2 max-w-[calc(100%-52px)] z-20 px-2.5 py-1 rounded-full bg-black/[0.55] text-[11px] sm:text-[11.5px] font-medium text-white truncate">
             {shortName}
           </span>
           {isHost && (
@@ -313,7 +313,7 @@ export default function VideoCard({
               !isAudioActive
                 ? 'bg-error-500 text-white'
                 : isSpeaking
-                  ? 'bg-brand-500 text-white ring-2 ring-brand-500/35'
+                  ? 'bg-brand-500 text-white ring-2 ring-brand-500/[0.35]'
                   : 'bg-brand-500 text-white'
             }`}
             title={!isAudioActive ? 'Micro coupé' : isSpeaking ? 'Parle en ce moment' : 'Micro ouvert'}

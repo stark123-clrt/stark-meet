@@ -62,7 +62,7 @@ export default function Lobby({
   const controlClass = (active) =>
     `w-12 h-12 rounded-full flex items-center justify-center transition-colors duration-200 ease-standard ${
       active
-        ? 'bg-white/15 text-white hover:bg-white/25'
+        ? 'bg-white/[0.15] text-white hover:bg-white/25'
         : 'bg-error-500 text-white hover:brightness-110'
     }`;
 

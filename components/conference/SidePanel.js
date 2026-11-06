@@ -308,7 +308,7 @@ function ParticipantsList({
   return (
     <div className="flex flex-col gap-4">
       {isHost && waiting.length > 0 && (
-        <div className="flex flex-col gap-3 border border-warning-500/35 bg-warning-50 rounded-md p-3.5">
+        <div className="flex flex-col gap-3 border border-warning-500/[0.35] bg-warning-50 rounded-md p-3.5">
           <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-overline uppercase text-warning-500">
             <span className="w-1.5 h-1.5 rounded-full bg-warning-500" />
             Salle d&apos;attente · {waiting.length}
