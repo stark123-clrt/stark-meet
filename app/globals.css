@@ -40,13 +40,6 @@ body {
   display: none;
 }
 
-/* Trame de points du haut de la landing, atténuée en ellipse vers les bords. */
-.hero-dots {
-  background-image: radial-gradient(#dbe3ef 1px, transparent 1px);
-  background-size: 18px 18px;
-  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000 40%, transparent 100%);
-  mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000 40%, transparent 100%);
-}
 
 /* Barres de niveau audio des tuiles vidéo. Chaque barre est décalée dans le
    temps (animationDelay) pour donner le mouvement d'un égaliseur. */

@@ -101,7 +101,7 @@ export default function TranscriptDialog({ meeting, timeZone, onClose }) {
       <div className="bg-surface rounded-lg shadow-overlay max-w-2xl w-full max-h-[85vh] flex flex-col border border-slate-200">
         <div className="flex items-start justify-between gap-4 px-6 py-5 border-b border-slate-200">
           <div className="min-w-0">
-            <h3 className="font-display font-bold text-[17px] tracking-heading truncate">
+            <h3 className="font-display font-medium text-[18px] tracking-heading truncate">
               {meeting.title}
             </h3>
             <p className="mt-0.5 text-[13px] text-slate-700">
@@ -141,7 +141,7 @@ export default function TranscriptDialog({ meeting, timeZone, onClose }) {
             <div className="flex flex-col gap-5">
               {turns.map((turn) => (
                 <div key={turn.id}>
-                  <p className="text-[11px] font-semibold tracking-overline uppercase text-slate-500">
+                  <p className="text-[11px] font-semibold text-slate-500">
                     {turn.displayName}
                   </p>
                   <p className="mt-1 text-[14px] leading-relaxed text-slate-950">

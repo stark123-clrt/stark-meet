@@ -79,7 +79,6 @@ module.exports = {
         // dessiner de contour visible — c'est ce qui distingue une ombre « de
         // profondeur » d'une ombre « de contour ».
         'card-hover': '0 25px 70px rgba(5,22,52,0.08)',
-        'brand-glow': '0 8px 24px rgba(14,89,242,0.28)',
         lg: '0 18px 50px rgba(5,22,52,0.10)',
         overlay: '0 30px 80px rgba(5,22,52,0.16)',
         focus: '0 0 0 3px rgba(14,89,242,0.14)',

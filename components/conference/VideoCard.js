@@ -171,7 +171,7 @@ export default function VideoCard({
   const isStage = variant === 'stage';
   // 'grid' occupe tout son conteneur (dimensionné au pixel par VideoGrid),
   // mais garde les habillages compacts d'une vignette : le bandeau
-  // « INTERVENANT ACTIF » n'a de sens que sur une mise en avant unique.
+  // « Intervenant actif » n'a de sens que sur une mise en avant unique.
   const fillsContainer = isStage || variant === 'grid';
   const initials = initialsOf(participant?.name);
   const isHost = participant?.role === 'host';
@@ -203,7 +203,7 @@ export default function VideoCard({
           <div className="absolute inset-0 z-30 pointer-events-none rounded-[inherit] border-2 border-warning-500" />
           {!isStage && (
             <span
-              className="absolute z-30 top-1.5 right-1.5 w-6 h-6 rounded-full bg-warning-500 text-white flex items-center justify-center animate-pulse"
+              className="absolute z-30 top-1.5 right-1.5 w-6 h-6 rounded-full bg-warning-500 text-white flex items-center justify-center"
               title="A levé la main"
             >
               <Hand className="h-3.5 w-3.5" />
@@ -214,7 +214,7 @@ export default function VideoCard({
 
       <div className="absolute inset-0 w-full h-full flex items-center justify-center z-0">
         <span
-          className={`rounded-full bg-white/10 flex items-center justify-center font-mono font-bold text-white/90 ${
+          className={`rounded-full bg-white/10 flex items-center justify-center font-mono font-medium text-white/90 ${
             isStage ? 'w-24 h-24 sm:w-32 sm:h-32 text-3xl sm:text-4xl' : 'w-10 h-10 sm:w-11 sm:h-11 text-sm'
           }`}
         >
@@ -259,7 +259,7 @@ export default function VideoCard({
               temps — la personne mise en avant n'est pas celle qui parle.
               Le template place à cet endroit un chronomètre d'enregistrement,
               qui promettrait une capture inexistante. */}
-          <div className="absolute inset-x-0 bottom-0 h-20 sm:h-[90px] z-10 pointer-events-none bg-gradient-to-t from-black/60 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 h-20 sm:h-[88px] z-10 pointer-events-none bg-gradient-to-t from-black/60 to-transparent" />
 
           {/* Niveau audio, en bas à droite comme dans le template. */}
           <span
@@ -273,7 +273,7 @@ export default function VideoCard({
           <div className="absolute left-3 bottom-2.5 sm:left-5 sm:bottom-[18px] z-20 flex items-center gap-2.5">
             <span className="text-sm sm:text-base font-semibold text-white drop-shadow">{participant?.name || 'Participant'}</span>
             {isHost && (
-              <span className="font-mono text-[9px] font-bold tracking-overline uppercase text-white bg-brand-500 rounded-xs px-1.5 py-0.5">Hôte</span>
+              <span className="font-mono text-[11px] font-medium text-white bg-brand-500 rounded-xs px-1.5 py-0.5">Hôte</span>
             )}
             {!isAudioActive && (
               <span className="flex items-center justify-center w-6 h-6 rounded-full bg-error-500/25">
@@ -282,11 +282,11 @@ export default function VideoCard({
             )}
             {handRaised && (
               <span
-                className="flex items-center gap-1.5 h-6 px-2 rounded-full bg-warning-500 text-white font-mono text-[10px] font-bold animate-pulse"
+                className="flex items-center gap-1.5 h-6 px-2 rounded-full bg-warning-500 text-white font-mono text-[11px] font-medium"
                 title="A levé la main"
               >
                 <Hand className="h-3.5 w-3.5" />
-                MAIN LEVÉE
+                Main levée
               </span>
             )}
           </div>
@@ -294,11 +294,11 @@ export default function VideoCard({
       ) : (
         <>
           {/* Étiquette du nom en pastille sombre, comme dans le template. */}
-          <span className="absolute left-2 bottom-2 max-w-[calc(100%-52px)] z-20 px-2.5 py-1 rounded-full bg-black/[0.55] text-[11px] sm:text-[11.5px] font-medium text-white truncate">
+          <span className="absolute left-2 bottom-2 max-w-[calc(100%-52px)] z-20 px-2.5 py-1 rounded-full bg-black/[0.55] text-[11px] sm:text-[12px] font-medium text-white truncate">
             {shortName}
           </span>
           {isHost && (
-            <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-20 font-mono text-[8.5px] sm:text-[9px] font-bold tracking-overline uppercase text-white bg-brand-500 rounded-xs px-1.5 py-0.5">
+            <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-20 font-mono text-[11px] font-medium text-white bg-brand-500 rounded-xs px-1.5 py-0.5">
               Hôte
             </span>
           )}

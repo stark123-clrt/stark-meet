@@ -8,8 +8,8 @@ function Stat({ icon: Icon, label, value }) {
   return (
     <div className="flex-1 bg-surface border border-slate-200 rounded-lg p-5 text-center">
       <Icon className="h-4 w-4 text-slate-500 mx-auto mb-2.5" />
-      <p className="font-display font-bold text-[22px] tracking-heading tabular-nums">{value}</p>
-      <p className="mt-1 text-[12.5px] text-slate-700">{label}</p>
+      <p className="font-display font-medium text-[24px] tracking-heading tabular-nums">{value}</p>
+      <p className="mt-1 text-[13px] text-slate-700">{label}</p>
     </div>
   );
 }
@@ -41,13 +41,13 @@ export default function EndScreen({ meeting, stats, isHost, stillRunning, endsAt
           {stillRunning ? <DoorOpen className="h-6 w-6" /> : <PhoneOff className="h-6 w-6" />}
         </span>
 
-        <h1 className="font-display font-bold text-[28px] tracking-heading">
+        <h1 className="font-display font-medium text-[28px] tracking-heading">
           {stillRunning ? 'Vous avez quitté la réunion' : 'Appel terminé'}
         </h1>
         <p className="mt-2 text-[15px] text-slate-700">{meeting?.title || 'Réunion'}</p>
 
         {stillRunning && (
-          <p className="mt-3 inline-flex items-center gap-2 px-3.5 py-2 rounded-sm bg-brand-50 text-[13.5px] text-brand-500">
+          <p className="mt-3 inline-flex items-center gap-2 px-3.5 py-2 rounded-sm bg-brand-50 text-[14px] text-brand-500">
             <Clock className="h-4 w-4 flex-none" />
             La réunion continue{endsAtLabel ? ` jusqu'à ${endsAtLabel}` : ''} — vous pouvez y revenir.
           </p>
@@ -79,7 +79,7 @@ export default function EndScreen({ meeting, stats, isHost, stillRunning, endsAt
           </Link>
         </div>
 
-        <p className="mt-6 text-[12.5px] leading-relaxed text-slate-500">
+        <p className="mt-6 text-[13px] leading-relaxed text-slate-500">
           Le compte-rendu automatique et l&apos;enregistrement arriveront avec le plan Équipe.
         </p>
       </div>

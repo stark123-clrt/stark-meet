@@ -220,7 +220,7 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
           item.type === 'day' ? (
             <div key={item.id} className="flex items-center gap-3 py-3">
               <span className="flex-1 h-px bg-slate-200" />
-              <span className="font-mono text-[10px] font-bold tracking-wide text-slate-500 uppercase">
+              <span className="font-mono text-[11px] font-medium text-slate-500">
                 {formatDayLabel(item.at)}
               </span>
               <span className="flex-1 h-px bg-slate-200" />
@@ -245,7 +245,7 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
       {pendingCount > 0 && (
         <button
           onClick={() => scrollToBottom()}
-          className="absolute left-1/2 -translate-x-1/2 bottom-[74px] z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-500 hover:bg-brand-600 text-white text-[12px] font-semibold shadow-lg transition-colors"
+          className="absolute left-1/2 -translate-x-1/2 bottom-[72px] z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-500 hover:bg-brand-600 text-white text-[12px] font-semibold shadow-lg transition-colors"
         >
           <ArrowDown className="h-3.5 w-3.5" />
           {pendingCount} nouveau{pendingCount > 1 ? 'x' : ''} message{pendingCount > 1 ? 's' : ''}
@@ -286,7 +286,7 @@ export default function ChatPanel({ messages, loading, currentUserId, onSend, on
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Écrire un message…"
-            className="flex-1 resize-none max-h-28 bg-surface border border-slate-200 rounded-md px-3 py-2 text-[13.5px] leading-relaxed text-slate-950 placeholder:text-slate-500 focus:outline-none focus:border-brand-500 transition-colors scrollbar-hide"
+            className="flex-1 resize-none max-h-28 bg-surface border border-slate-200 rounded-md px-3 py-2 text-[14px] leading-relaxed text-slate-950 placeholder:text-slate-500 focus:outline-none focus:border-brand-500 transition-colors scrollbar-hide"
           />
 
           <button
@@ -333,7 +333,7 @@ function MessageRow({
       <div className="flex-none w-8">
         {startsGroup ? (
           <span
-            className="w-8 h-8 rounded-full flex items-center justify-center font-mono text-[11px] font-bold"
+            className="w-8 h-8 rounded-full flex items-center justify-center font-mono text-[11px] font-medium"
             style={{ background: color.bg, color: color.fg }}
             title={message.sender_name}
           >
@@ -348,10 +348,10 @@ function MessageRow({
       <div className={`flex flex-col min-w-0 max-w-[78%] ${isMine ? 'items-end' : 'items-start'}`}>
         {startsGroup && (
           <div className={`flex items-baseline gap-2 mb-1 ${isMine ? 'flex-row-reverse' : ''}`}>
-            <span className="text-[12.5px] font-semibold text-slate-950 truncate">
+            <span className="text-[13px] font-semibold text-slate-950 truncate">
               {isMine ? 'Vous' : message.sender_name}
             </span>
-            <span className="font-mono text-[10.5px] text-slate-500 flex-none">
+            <span className="font-mono text-[11px] text-slate-500 flex-none">
               {formatTime(message.created_at)}
             </span>
           </div>
@@ -359,7 +359,7 @@ function MessageRow({
 
         <div
           className={`px-3 py-2 whitespace-pre-wrap break-words ${
-            big ? 'text-[32px] leading-tight bg-transparent px-1 py-0' : 'text-[13.5px] leading-relaxed'
+            big ? 'text-[32px] leading-tight bg-transparent px-1 py-0' : 'text-[14px] leading-relaxed'
           } ${
             big
               ? ''
@@ -385,7 +385,7 @@ function MessageRow({
                 }`}
               >
                 <span>{reaction.emoji}</span>
-                <span className="font-mono text-[10.5px] tabular-nums">{reaction.names.length}</span>
+                <span className="font-mono text-[11px] tabular-nums">{reaction.names.length}</span>
               </button>
             ))}
           </div>

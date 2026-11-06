@@ -42,7 +42,7 @@ function SectionHeader({ title, count, open, onToggle, action }) {
         className="flex items-center gap-1.5 min-w-0 text-left"
         aria-expanded={open}
       >
-        <h2 className="font-display font-bold text-[16px] tracking-heading truncate">{title}</h2>
+        <h2 className="font-display font-medium text-[16px] tracking-heading truncate">{title}</h2>
         {typeof count === 'number' && (
           <span className="text-[13px] text-slate-500 flex-none">· {count}</span>
         )}
@@ -233,7 +233,7 @@ export default function SidePanel({
               onToggle={() => setTranscriptOpen((v) => !v)}
               action={
                 transcript.partials.length > 0 ? (
-                  <span className="flex items-center gap-1.5 font-mono text-[9.5px] font-bold tracking-overline uppercase text-brand-500">
+                  <span className="flex items-center gap-1.5 font-mono text-[11px] font-medium text-brand-500">
                     <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse" />
                     En direct
                   </span>
@@ -258,7 +258,7 @@ export default function SidePanel({
           onToggle={() => setChatOpen((v) => !v)}
           action={
             chat.unreadCount > 0 && !chatVisible ? (
-              <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-brand-500 text-white text-[11px] font-bold">
+              <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-brand-500 text-white text-[11px] font-medium">
                 {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
               </span>
             ) : null
@@ -309,7 +309,7 @@ function ParticipantsList({
     <div className="flex flex-col gap-4">
       {isHost && waiting.length > 0 && (
         <div className="flex flex-col gap-3 border border-warning-500/[0.35] bg-warning-50 rounded-md p-3.5">
-          <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-overline uppercase text-warning-500">
+          <span className="flex items-center gap-1.5 font-mono text-[11px] font-medium text-warning-500">
             <span className="w-1.5 h-1.5 rounded-full bg-warning-500" />
             Salle d&apos;attente · {waiting.length}
           </span>
@@ -317,7 +317,7 @@ function ParticipantsList({
             {waiting.map((w) => (
               <div key={w.id} className="flex items-center gap-2.5">
                 <Avatar size="sm" name={w.display_name} seed={w.profile_id || w.guest_id || w.id} />
-                <span className="flex-1 text-[13.5px] font-medium text-slate-950 truncate min-w-0">
+                <span className="flex-1 text-[14px] font-medium text-slate-950 truncate min-w-0">
                   {w.display_name}
                 </span>
                 <button
@@ -358,18 +358,18 @@ function ParticipantsList({
               <Avatar size="sm" name={p.display_name} seed={userId || p.id} />
 
               <div className="flex-1 flex items-center gap-2 min-w-0">
-                <span className="text-[13.5px] font-medium text-slate-950 truncate">
+                <span className="text-[14px] font-medium text-slate-950 truncate">
                   {p.display_name}{isMe && ' (vous)'}
                 </span>
                 {(p.role === 'host' || p.role === 'co-host') && (
-                  <span className="flex-none font-mono text-[9px] font-bold tracking-overline uppercase text-brand-500 bg-brand-50 rounded-xs px-1.5 py-0.5">
+                  <span className="flex-none font-mono text-[11px] font-medium text-brand-500 bg-brand-50 rounded-xs px-1.5 py-0.5">
                     {p.role === 'host' ? 'Hôte' : 'Co-hôte'}
                   </span>
                 )}
               </div>
 
               {handRaised && (
-                <span className="flex-none text-warning-500 animate-pulse" title="A levé la main">
+                <span className="flex-none text-warning-500" title="A levé la main">
                   <Hand className="h-4 w-4" />
                 </span>
               )}
@@ -385,14 +385,14 @@ function ParticipantsList({
                   <button
                     onClick={() => onForceMute?.(p.id)}
                     title={p.force_muted ? 'Réautoriser le micro' : 'Couper le micro'}
-                    className="w-[26px] h-[26px] rounded-sm text-slate-500 hover:text-slate-950 hover:bg-slate-100 flex items-center justify-center"
+                    className="w-7 h-7 rounded-sm text-slate-500 hover:text-slate-950 hover:bg-slate-100 flex items-center justify-center"
                   >
                     {p.force_muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
                   </button>
                   <button
                     onClick={() => onRemove?.(p.id)}
                     title="Exclure de la réunion"
-                    className="w-[26px] h-[26px] rounded-sm text-slate-500 hover:text-error-500 hover:bg-slate-100 flex items-center justify-center"
+                    className="w-7 h-7 rounded-sm text-slate-500 hover:text-error-500 hover:bg-slate-100 flex items-center justify-center"
                   >
                     <UserX className="h-3.5 w-3.5" />
                   </button>

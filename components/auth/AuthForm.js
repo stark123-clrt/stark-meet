@@ -169,7 +169,7 @@ export default function AuthForm({ defaultMode = 'signup', onAuthenticated }) {
         </button>
       </div>
 
-      <h2 className="font-display font-bold text-2xl tracking-heading text-slate-950 mb-1.5">
+      <h2 className="font-display font-medium text-2xl tracking-heading text-slate-950 mb-1.5">
         {isSignup ? 'Créez votre espace' : 'Content de vous revoir'}
       </h2>
       <p className="text-[14px] text-slate-700 mb-6">
@@ -182,7 +182,7 @@ export default function AuthForm({ defaultMode = 'signup', onAuthenticated }) {
         type="button"
         onClick={handleGoogle}
         disabled={googleLoading || loading}
-        className="w-full h-11 flex items-center justify-center gap-2.5 border border-slate-200 rounded-sm bg-surface text-[15px] font-medium text-slate-950 transition duration-200 ease-standard hover:bg-slate-50 hover:-translate-y-px disabled:opacity-60 disabled:cursor-not-allowed disabled:translate-y-0"
+        className="w-full h-11 flex items-center justify-center gap-2.5 border border-slate-200 rounded-sm bg-surface text-[15px] font-medium text-slate-950 transition duration-200 ease-standard hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed disabled:translate-y-0"
       >
         <GoogleMark />
         {googleLoading ? 'Redirection…' : 'Continuer avec Google'}
@@ -262,14 +262,14 @@ export default function AuthForm({ defaultMode = 'signup', onAuthenticated }) {
         <button
           type="submit"
           disabled={loading || googleLoading}
-          className="w-full h-11 rounded-sm bg-brand-500 text-surface text-[15px] font-semibold transition duration-200 ease-standard hover:bg-brand-600 hover:shadow-brand-glow disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
+          className="w-full h-11 rounded-sm bg-brand-500 text-surface text-[15px] font-semibold transition duration-200 ease-standard hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'Un instant…' : isSignup ? 'Créer mon compte' : 'Se connecter'}
         </button>
       </form>
 
       <p className="mt-5 text-[12px] leading-relaxed text-slate-500">
-        Aucune carte bancaire requise. Réunions illimitées jusqu&apos;à 40 minutes sur le plan gratuit.
+        Aucune carte bancaire requise. Réunions sans limite de durée.
       </p>
     </div>
   );

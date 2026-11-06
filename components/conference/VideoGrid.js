@@ -143,18 +143,18 @@ export default function VideoGrid({
           {pinnedTile ? (
             <button
               onClick={() => setPinnedId(null)}
-              className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-wide text-brand-500 bg-brand-50 border border-brand-500/30 rounded-sm px-2.5 py-1 hover:brightness-95 transition-colors"
+              className="flex items-center gap-1.5 font-mono text-[11px] font-medium text-brand-500 bg-brand-50 border border-brand-500/30 rounded-sm px-2.5 py-1 hover:brightness-95 transition-colors"
             >
               <PinOff className="h-3 w-3" />
-              ÉPINGLÉ · DÉTACHER
+              Épinglé · détacher
             </button>
           ) : (
             // Bleu et non ambre : un partage d'écran en cours est une
             // information, pas un avertissement. L'ambre reste réservé à ce qui
             // demande une action — main levée, salle d'attente, coupure réseau.
-            <span className="flex items-center gap-1.5 font-mono text-[10.5px] font-bold tracking-overline uppercase text-brand-500 bg-brand-50 border border-brand-500/25 rounded-sm px-2.5 py-1">
+            <span className="flex items-center gap-1.5 font-mono text-[11px] font-medium text-brand-500 bg-brand-50 border border-brand-500/25 rounded-sm px-2.5 py-1">
               <MonitorUp className="h-3 w-3" />
-              PARTAGE D&apos;ÉCRAN
+              Partage d&apos;écran
             </span>
           )}
         </div>
@@ -335,13 +335,13 @@ function TileWithPin({ tile, variant, isPinned, isSpotlighted = false, showPin =
       <button
         onClick={onTogglePin}
         title={isPinned ? 'Détacher' : 'Épingler en grand'}
-        // Haut-centre : les quatre coins sont déjà pris (HÔTE, main levée,
+        // Haut-centre : les quatre coins sont déjà pris (Hôte, main levée,
         // micro coupé) et se chevaucheraient.
         aria-label={isPinned ? 'Détacher' : 'Épingler en grand'}
         // Visible en permanence la ou il n'y a pas de survol : au doigt,
         // `group-hover` ne se declenche jamais, l'epinglage etait donc
         // inaccessible sur telephone.
-        className={`absolute top-1.5 left-1/2 -translate-x-1/2 z-40 w-8 h-8 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-all ${
+        className={`absolute top-1.5 left-1/2 -translate-x-1/2 z-40 w-8 h-8 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-[opacity,background-color] ${
           isPinned
             ? 'bg-brand-500 text-white opacity-100'
             : 'bg-black/[0.55] text-white opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100 hover:bg-black/75'

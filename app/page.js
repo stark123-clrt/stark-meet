@@ -86,8 +86,8 @@ function AppPreview() {
         <span className="w-2 h-2 rounded-full bg-brand-500" />
         <span className="text-white/90 text-[13px] font-semibold">Point d&apos;équipe hebdo</span>
         <span className="font-mono text-[11px] text-white/[0.45] border border-white/[0.15] rounded px-2 py-0.5">XKR-42D</span>
-        <span className="ml-auto flex items-center gap-1.5 font-mono text-[10px] font-bold text-success-500">
-          <span className="w-1.5 h-1.5 rounded-full bg-success-500" /> EN DIRECT
+        <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] font-medium text-success-500">
+          <span className="w-1.5 h-1.5 rounded-full bg-success-500" /> En direct
         </span>
       </div>
 
@@ -100,7 +100,7 @@ function AppPreview() {
               className="relative rounded-lg overflow-hidden bg-white/[0.05] border border-white/10 flex items-center justify-center"
             >
               <span
-                className="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center font-mono font-bold text-sm sm:text-lg"
+                className="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center font-mono font-medium text-sm sm:text-lg"
                 style={{ background: color.bg, color: color.fg }}
               >
                 {initialsOf(name)}
@@ -150,7 +150,7 @@ export default function LandingPage() {
         <div className="max-w-[1280px] mx-auto px-6 h-[68px] flex items-center gap-8">
           <Link href="#top" className="flex items-center gap-2.5 text-slate-950">
             <Logo />
-            <span className="font-display font-bold text-[18px] tracking-heading">Stark Meet</span>
+            <span className="font-display font-medium text-[18px] tracking-heading">Stark Meet</span>
           </Link>
 
           <nav className="hidden md:flex items-center gap-7 text-[14px] text-slate-700">
@@ -178,25 +178,25 @@ export default function LandingPage() {
 
       {/* ---- Hero + inscription ---- */}
       <section id="top" className="relative overflow-hidden">
-        <div className="hero-dots absolute inset-0 pointer-events-none" />
 
         <div className="relative max-w-[1280px] mx-auto px-6 pt-14 pb-16 lg:pt-20 grid lg:grid-cols-[1.05fr_.95fr] gap-10 lg:gap-16 items-center">
           <div>
-            <p className="text-[11px] font-semibold tracking-overline uppercase text-slate-500 mb-5">
+            <p className="text-[13px] font-medium text-slate-500 mb-5">
               Visioconférence d&apos;équipe
             </p>
-            <h1 className="font-display font-bold text-[40px] sm:text-[52px] lg:text-[60px] leading-[1.04] tracking-display mb-5">
-              Vos réunions, sans friction.
+            <h1 className="font-display font-medium text-[40px] sm:text-[52px] lg:text-[60px] leading-[1.04] tracking-display mb-5">
+              La visioconférence qui sait qui a dit quoi
             </h1>
-            <p className="text-[17px] sm:text-[18px] leading-relaxed text-slate-700 max-w-[520px] mb-8">
-              Lancez un appel en un lien, partagez votre écran, discutez et modérez. Stark Meet
-              fonctionne directement dans le navigateur, sans installation.
+            <p className="text-[18px] leading-relaxed text-slate-700 max-w-[520px] mb-8">
+              Lancez un appel en un lien, partagez votre écran, modérez — et suivez chaque
+              intervention transcrite en direct, au nom de son auteur. Dans le navigateur, sans
+              installation.
             </p>
 
             <div className="flex items-center gap-6 flex-wrap">
               <a
                 href="#inscription"
-                className="h-11 px-6 flex items-center rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 hover:shadow-brand-glow transition duration-200 ease-standard"
+                className="h-11 px-6 flex items-center rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition duration-200 ease-standard"
               >
                 Commencer gratuitement
               </a>
@@ -239,7 +239,7 @@ export default function LandingPage() {
                   return (
                     <span
                       key={name}
-                      className="-mr-2 w-8 h-8 rounded-full border-2 border-slate-50 flex items-center justify-center font-mono text-[10px] font-bold"
+                      className="-mr-2 w-8 h-8 rounded-full border-2 border-slate-50 flex items-center justify-center font-mono text-[11px] font-medium"
                       style={{ background: color.bg, color: color.fg }}
                       title={name}
                     >
@@ -270,11 +270,11 @@ export default function LandingPage() {
       {/* ---- Fonctionnalités ---- */}
       <section id="fonctionnalites" className="border-t border-slate-200 bg-surface scroll-mt-[68px]">
         <div className="max-w-[1280px] mx-auto px-6 py-16 lg:py-20">
-          <p className="text-[11px] font-semibold tracking-overline uppercase text-slate-500 mb-3">
+          <p className="text-[13px] font-medium text-slate-500 mb-3">
             Fonctionnalités
           </p>
-          <h2 className="font-display font-bold text-[30px] sm:text-[40px] leading-tight tracking-heading max-w-[600px] mb-12">
-            Tout ce qu&apos;il faut pour une réunion, rien de plus.
+          <h2 className="font-display font-medium text-[32px] sm:text-[40px] leading-tight tracking-heading max-w-[600px] mb-12">
+            Tout ce qu&apos;il faut pour une réunion, rien de plus
           </h2>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -286,7 +286,7 @@ export default function LandingPage() {
                 <span className="w-10 h-10 rounded-md bg-brand-50 text-brand-500 flex items-center justify-center mb-4">
                   <Icon className="h-5 w-5" />
                 </span>
-                <h3 className="font-display font-semibold text-[17px] tracking-heading mb-2">{title}</h3>
+                <h3 className="font-display font-semibold text-[18px] tracking-heading mb-2">{title}</h3>
                 <p className="text-[14px] leading-relaxed text-slate-700">{text}</p>
               </div>
             ))}
@@ -298,11 +298,11 @@ export default function LandingPage() {
       <section id="securite" className="border-t border-slate-200 scroll-mt-[68px]">
         <div className="max-w-[1280px] mx-auto px-6 py-16 lg:py-20 grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
           <div>
-            <p className="text-[11px] font-semibold tracking-overline uppercase text-slate-500 mb-3">
+            <p className="text-[13px] font-medium text-slate-500 mb-3">
               Sécurité
             </p>
-            <h2 className="font-display font-bold text-[30px] sm:text-[40px] leading-tight tracking-heading mb-6">
-              Chiffré de bout en bout, hébergé en Europe.
+            <h2 className="font-display font-medium text-[32px] sm:text-[40px] leading-tight tracking-heading mb-6">
+              Chiffré en transit, hébergé en Europe
             </h2>
             <ul className="flex flex-col gap-3.5">
               {SECURITY_POINTS.map((point) => (
@@ -322,7 +322,7 @@ export default function LandingPage() {
               return (
                 <div key={label} className="bg-surface border border-slate-200 rounded-lg p-5">
                   <Icon className="h-4 w-4 text-slate-500 mb-3" />
-                  <p className="font-display font-bold text-[20px] tracking-heading">{value}</p>
+                  <p className="font-display font-medium text-[20px] tracking-heading">{value}</p>
                   <p className="text-[13px] text-slate-700 mt-1">{label}</p>
                 </div>
               );
@@ -334,11 +334,11 @@ export default function LandingPage() {
       {/* ---- Tarifs ---- */}
       <section id="tarifs" className="border-t border-slate-200 bg-surface scroll-mt-[68px]">
         <div className="max-w-[1280px] mx-auto px-6 py-16 lg:py-20">
-          <p className="text-[11px] font-semibold tracking-overline uppercase text-slate-500 mb-3">
+          <p className="text-[13px] font-medium text-slate-500 mb-3">
             Tarifs
           </p>
-          <h2 className="font-display font-bold text-[30px] sm:text-[40px] leading-tight tracking-heading mb-12">
-            Deux plans, c&apos;est tout.
+          <h2 className="font-display font-medium text-[32px] sm:text-[40px] leading-tight tracking-heading mb-12">
+            Deux plans, c&apos;est tout
           </h2>
 
           <div className="grid sm:grid-cols-2 gap-6 max-w-[820px]">
@@ -349,14 +349,9 @@ export default function LandingPage() {
                   plan.featured ? 'border-brand-500 shadow-card-hover' : 'border-slate-200'
                 }`}
               >
-                {plan.featured && (
-                  <span className="absolute top-5 right-5 font-mono text-[10px] font-bold tracking-overline uppercase text-brand-500 bg-brand-50 rounded-xs px-2 py-1">
-                    Populaire
-                  </span>
-                )}
                 <h3 className="font-display font-semibold text-[18px] tracking-heading">{plan.name}</h3>
                 <p className="mt-4 flex items-baseline gap-2">
-                  <span className="font-display font-bold text-[36px] tracking-display">{plan.price}</span>
+                  <span className="font-display font-medium text-[36px] tracking-display">{plan.price}</span>
                   <span className="text-[14px] text-slate-500">{plan.period}</span>
                 </p>
 
@@ -388,12 +383,12 @@ export default function LandingPage() {
       {/* ---- Appel à l'action final ---- */}
       <section className="border-t border-slate-200">
         <div className="max-w-[1280px] mx-auto px-6 py-16 lg:py-20 text-center">
-          <h2 className="font-display font-bold text-[28px] sm:text-[36px] tracking-heading mb-6">
-            Votre première réunion dans une minute.
+          <h2 className="font-display font-medium text-[28px] sm:text-[36px] tracking-heading mb-6">
+            Votre première réunion dans une minute
           </h2>
           <a
             href="#inscription"
-            className="inline-flex h-11 px-6 items-center rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 hover:shadow-brand-glow transition duration-200 ease-standard"
+            className="inline-flex h-11 px-6 items-center rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition duration-200 ease-standard"
           >
             Créer mon compte
           </a>
@@ -404,7 +399,7 @@ export default function LandingPage() {
         <div className="max-w-[1280px] mx-auto px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
             <Logo />
-            <span className="font-display font-bold text-[15px] tracking-heading">Stark Meet</span>
+            <span className="font-display font-medium text-[15px] tracking-heading">Stark Meet</span>
           </div>
           <p className="text-[13px] text-slate-500">
             Visioconférence auto-hébergée · {new Date().getFullYear()}

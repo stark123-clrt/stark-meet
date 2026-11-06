@@ -16,7 +16,7 @@ const COMMON_ZONES = [
 function Card({ title, subtitle, children }) {
   return (
     <div className="bg-surface border border-slate-200 rounded-lg p-6">
-      <h2 className="font-display font-bold text-[17px] tracking-heading">{title}</h2>
+      <h2 className="font-display font-medium text-[18px] tracking-heading">{title}</h2>
       {subtitle && <p className="mt-1 text-[13px] text-slate-700">{subtitle}</p>}
       <div className={subtitle ? 'mt-5' : 'mt-5'}>{children}</div>
     </div>

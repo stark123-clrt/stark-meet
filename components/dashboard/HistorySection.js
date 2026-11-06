@@ -25,7 +25,7 @@ export default function HistorySection({
       <div className="bg-surface border border-slate-200 rounded-lg overflow-hidden">
         <div className="overflow-x-auto scrollbar-hide">
           <div className="min-w-[760px]">
-            <div className={`grid ${COLUMNS} gap-4 px-5 py-3.5 border-b border-slate-200 bg-slate-50 text-[11px] font-semibold tracking-overline uppercase text-slate-500`}>
+            <div className={`grid ${COLUMNS} gap-4 px-5 py-3.5 border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500`}>
               <span>Réunion</span>
               <span>Date</span>
               <span>Durée</span>
@@ -68,7 +68,7 @@ export default function HistorySection({
                       </button>
                     ) : (
                       <span
-                        className="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold tracking-overline uppercase text-slate-500 bg-slate-100 rounded-xs px-2 py-1"
+                        className="inline-flex items-center gap-1.5 font-mono text-[11px] font-medium text-slate-500 bg-slate-100 rounded-xs px-2 py-1"
                         title="Aucune parole enregistrée pour cette réunion."
                       >
                         <FileText className="h-3 w-3" />

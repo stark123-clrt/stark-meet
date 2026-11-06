@@ -56,7 +56,7 @@ export default function AuthCallbackPage() {
     <div className="min-h-screen bg-canvas flex items-center justify-center px-4">
       {error ? (
         <div className="text-center max-w-sm">
-          <p className="font-display font-bold text-[18px] tracking-heading">Connexion impossible</p>
+          <p className="font-display font-medium text-[18px] tracking-heading">Connexion impossible</p>
           <p className="text-slate-500 text-sm mt-1.5">{error}</p>
           <button
             onClick={() => router.replace('/auth')}

@@ -78,7 +78,7 @@ export default function CreateMeetingDialog({ hostId, defaultWaitingRoom = true,
     <div className="fixed inset-0 bg-slate-950/40 flex items-center justify-center p-4 z-50">
       <div className="bg-surface rounded-lg shadow-overlay max-w-md w-full border border-slate-200">
         <div className="flex items-center justify-between px-6 py-5 border-b border-slate-200">
-          <h3 className="font-display font-bold text-[17px] tracking-heading">Nouvelle réunion</h3>
+          <h3 className="font-display font-medium text-[18px] tracking-heading">Nouvelle réunion</h3>
           <button
             onClick={onClose}
             className="p-1.5 rounded-sm text-slate-500 hover:text-slate-950 hover:bg-slate-100 transition-colors"

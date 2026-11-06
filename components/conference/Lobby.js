@@ -117,13 +117,13 @@ export default function Lobby({
             </div>
           </div>
 
-          <p className="mt-7 text-[11px] font-semibold tracking-overline uppercase text-slate-500">
+          <p className="mt-7 text-[11px] font-semibold text-slate-500">
             {meeting?.scheduled_at ? 'Réunion planifiée' : 'Réunion instantanée'}
           </p>
-          <h1 className="mt-2 font-display font-bold text-[24px] leading-snug tracking-heading">
+          <h1 className="mt-2 font-display font-medium text-[24px] leading-snug tracking-heading">
             {meeting?.title || 'Réunion'}
           </h1>
-          <p className="mt-2.5 text-[13.5px] leading-relaxed text-slate-700">
+          <p className="mt-2.5 text-[14px] leading-relaxed text-slate-700">
             {meeting?.scheduled_at
               ? `${formatLongDate(meeting.scheduled_at, timeZone)} · ${formatTimeRange(meeting, timeZone)}`
               : 'Démarrage immédiat'}
@@ -152,7 +152,7 @@ export default function Lobby({
                 readOnly
                 value={manualLink}
                 onFocus={(event) => event.target.select()}
-                className="mt-1.5 w-full px-3 h-10 rounded-sm border border-slate-200 bg-surface font-mono text-[12.5px] text-slate-700"
+                className="mt-1.5 w-full px-3 h-10 rounded-sm border border-slate-200 bg-surface font-mono text-[13px] text-slate-700"
               />
             </div>
           )}
@@ -166,7 +166,7 @@ export default function Lobby({
           <div className="mt-auto pt-7">
             {waiting ? (
               <div className="flex items-start gap-3 px-4 py-3.5 rounded-sm bg-brand-50">
-                <Clock className="mt-0.5 h-4 w-4 text-brand-500 flex-none animate-pulse" />
+                <Clock className="mt-0.5 h-4 w-4 text-brand-500 flex-none" />
                 <div>
                   <p className="text-[14px] font-medium text-slate-950">En attente d&apos;admission</p>
                   <p className="mt-0.5 text-[13px] leading-relaxed text-slate-700">
@@ -179,7 +179,7 @@ export default function Lobby({
               <button
                 onClick={onJoin}
                 disabled={joining}
-                className="w-full h-12 rounded-md sm:rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 hover:shadow-brand-glow transition duration-200 ease-standard disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
+                className="w-full h-12 rounded-md sm:rounded-sm bg-brand-500 text-surface text-[15px] font-semibold hover:bg-brand-600 transition duration-200 ease-standard disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {joining ? 'Connexion…' : 'Rejoindre maintenant'}
               </button>

@@ -47,8 +47,8 @@ export default function TranscriptPanel({ finals, partials, className = '' }) {
       {isEmpty ? (
         <div className="flex flex-col items-center gap-2 py-6 text-center">
           <Loader2 className="h-4 w-4 text-slate-400 animate-spin" />
-          <p className="text-[12.5px] text-slate-500">En écoute…</p>
-          <p className="text-[11.5px] text-slate-400 max-w-[220px]">
+          <p className="text-[13px] text-slate-500">En écoute…</p>
+          <p className="text-[12px] text-slate-400 max-w-[220px]">
             Le texte apparaît quelques secondes après la parole, le temps de le confirmer.
           </p>
         </div>
@@ -70,13 +70,13 @@ function Line({ segment, tentative = false }) {
   return (
     <div className="flex gap-2.5">
       <span
-        className="flex-none w-7 h-7 rounded-full bg-slate-100 text-slate-500 font-mono text-[10px] font-bold flex items-center justify-center"
+        className="flex-none w-7 h-7 rounded-full bg-slate-100 text-slate-500 font-mono text-[11px] font-medium flex items-center justify-center"
         title={segment.displayName}
       >
         {initialsOf(segment.displayName)}
       </span>
       <div className="min-w-0 flex-1">
-        <span className="block font-mono text-[9.5px] font-bold tracking-overline uppercase text-slate-500">
+        <span className="block font-mono text-[11px] font-medium text-slate-500">
           {segment.displayName}
         </span>
         <p

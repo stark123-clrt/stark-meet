@@ -230,7 +230,7 @@ export default function ConferenceView({
             />
           ))}
           {connectedParticipants.length > 4 && (
-            <span className="-mr-2 w-8 h-8 rounded-full border-2 border-surface bg-slate-100 text-slate-700 font-mono text-[10px] font-bold flex items-center justify-center">
+            <span className="-mr-2 w-8 h-8 rounded-full border-2 border-surface bg-slate-100 text-slate-700 font-mono text-[11px] font-medium flex items-center justify-center">
               +{connectedParticipants.length - 4}
             </span>
           )}
@@ -239,7 +239,7 @@ export default function ConferenceView({
         <button
           onClick={copyCode}
           title="Copier le lien d'invitation"
-          className="hidden sm:flex items-center gap-2 h-9 px-3 rounded-sm bg-brand-50 text-brand-500 font-mono text-[12.5px] hover:brightness-95 transition"
+          className="hidden sm:flex items-center gap-2 h-9 px-3 rounded-sm bg-brand-50 text-brand-500 font-mono text-[13px] hover:brightness-95 transition"
         >
           {meeting?.meeting_code}
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
@@ -252,7 +252,7 @@ export default function ConferenceView({
             </span>
           )}
           {isLocked && (
-            <span className="hidden lg:flex items-center gap-1.5 font-mono text-[10px] font-bold tracking-overline uppercase text-warning-500 bg-warning-50 rounded-xs px-2 py-1">
+            <span className="hidden lg:flex items-center gap-1.5 font-mono text-[11px] font-medium text-warning-500 bg-warning-50 rounded-xs px-2 py-1">
               <Lock className="h-3 w-3" /> Verrouillée
             </span>
           )}
@@ -261,9 +261,9 @@ export default function ConferenceView({
               elle rappelle sous quel nom et quel rôle on est dans la salle. */}
           <div className="hidden xl:flex items-center gap-2.5 h-11 pl-2.5 pr-3 rounded-md border border-slate-200 bg-slate-50">
             <Avatar size="sm" name={currentUserName} seed={currentUserId} />
-            <div className="flex flex-col min-w-0 max-w-[130px]">
+            <div className="flex flex-col min-w-0 max-w-[128px]">
               <span className="text-[13px] font-medium truncate leading-tight">{currentUserName}</span>
-              <span className="text-[11.5px] text-slate-500 leading-tight">
+              <span className="text-[12px] text-slate-500 leading-tight">
                 {isHost ? 'Modérateur' : 'Participant'}
               </span>
             </div>
@@ -285,14 +285,14 @@ export default function ConferenceView({
           surtout, l'ancien comportement affichait « connecté » alors que la
           personne était sortie de la réunion sans le savoir. */}
       {isReconnecting && (
-        <div className="flex-none flex items-center gap-3 bg-warning-50 border-b border-warning-500/25 px-5 py-2.5 text-[13.5px] text-slate-700">
+        <div className="flex-none flex items-center gap-3 bg-warning-50 border-b border-warning-500/25 px-5 py-2.5 text-[14px] text-slate-700">
           <span className="w-2 h-2 rounded-full bg-warning-500 animate-pulse flex-none" />
           Connexion interrompue — reprise de la réunion en cours…
         </div>
       )}
 
       {error && !isReconnecting && (
-        <div className="flex-none flex items-start gap-3 bg-warning-50 border-b border-warning-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
+        <div className="flex-none flex items-start gap-3 bg-warning-50 border-b border-warning-500/20 px-5 py-2.5 text-[14px] text-slate-700">
           <span className="flex-1">{error}</span>
           <button onClick={clearError} title="Masquer" className="flex-none p-0.5 rounded-sm hover:bg-black/5">
             <X className="h-4 w-4" />
@@ -301,7 +301,7 @@ export default function ConferenceView({
       )}
 
       {notice && !isReconnecting && (
-        <div className="flex-none flex items-start gap-3 bg-brand-50 border-b border-brand-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
+        <div className="flex-none flex items-start gap-3 bg-brand-50 border-b border-brand-500/20 px-5 py-2.5 text-[14px] text-slate-700">
           <span className="flex-1">{notice}</span>
           <button onClick={() => setNotice('')} aria-label="Masquer" className="flex-none p-0.5 rounded-sm hover:bg-black/5">
             <X className="h-4 w-4" />
@@ -310,13 +310,13 @@ export default function ConferenceView({
       )}
 
       {manualInviteLink && (
-        <div className="flex-none flex items-center gap-3 bg-brand-50 border-b border-brand-500/20 px-5 py-2.5 text-[13.5px] text-slate-700">
+        <div className="flex-none flex items-center gap-3 bg-brand-50 border-b border-brand-500/20 px-5 py-2.5 text-[14px] text-slate-700">
           <span className="flex-none">Copie automatique impossible — sélectionnez le lien :</span>
           <input
             readOnly
             value={manualInviteLink}
             onFocus={(event) => event.target.select()}
-            className="flex-1 min-w-0 font-mono text-[12.5px] bg-surface border border-slate-200 rounded-sm px-2 py-1"
+            className="flex-1 min-w-0 font-mono text-[13px] bg-surface border border-slate-200 rounded-sm px-2 py-1"
           />
           <button
             onClick={() => setManualInviteLink('')}
@@ -385,8 +385,8 @@ export default function ConferenceView({
         <div className="hidden md:flex items-center gap-2.5 w-[260px] flex-none">
           <Avatar size="sm" name={currentUserName} seed={currentUserId} />
           <div className="flex flex-col min-w-0">
-            <span className="text-[13.5px] font-medium truncate">{currentUserName}</span>
-            <span className="text-[11.5px] text-slate-500">
+            <span className="text-[14px] font-medium truncate">{currentUserName}</span>
+            <span className="text-[12px] text-slate-500">
               {isHost ? 'Modérateur' : 'Participant'}
             </span>
           </div>
@@ -475,7 +475,7 @@ export default function ConferenceView({
                 priorité de couleur. */}
             {waitingCount + unreadMessages > 0 && (
               <span
-                className={`absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full text-[9.5px] font-bold flex items-center justify-center ${
+                className={`absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full text-[11px] font-medium flex items-center justify-center ${
                   waitingCount > 0 ? 'bg-warning-500 text-white' : 'bg-brand-500 text-white'
                 }`}
               >
@@ -488,7 +488,7 @@ export default function ConferenceView({
 
           <button
             onClick={handleLeave}
-            className="flex-none flex items-center gap-2 h-12 px-4 sm:px-6 rounded-full bg-error-500 text-white text-[13.5px] font-semibold hover:brightness-110 transition"
+            className="flex-none flex items-center gap-2 h-12 px-4 sm:px-6 rounded-full bg-error-500 text-white text-[14px] font-semibold hover:brightness-110 transition"
           >
             <PhoneOff className="h-4 w-4" />
             <span className="hidden sm:inline">Quitter l&apos;appel</span>

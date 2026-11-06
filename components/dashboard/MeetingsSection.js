@@ -13,17 +13,17 @@ function ActionCard({ icon: Icon, title, text, onClick, tone = 'brand', children
     <Wrapper
       onClick={onClick}
       className={`flex flex-col items-start gap-3 p-5 bg-surface border border-slate-200 rounded-lg text-left transition duration-200 ease-standard ${
-        onClick ? 'hover:-translate-y-0.5 hover:shadow-card-hover' : ''
+        onClick ? 'hover:shadow-card-hover' : ''
       }`}
     >
       <span
-        className={`w-[38px] h-[38px] rounded-md flex items-center justify-center ${
+        className={`w-10 h-10 rounded-md flex items-center justify-center ${
           tone === 'brand' ? 'bg-brand-500 text-surface' : 'bg-brand-50 text-brand-500'
         }`}
       >
-        <Icon className="h-[19px] w-[19px]" />
+        <Icon className="h-[18px] w-[18px]" />
       </span>
-      <span className="font-display font-bold text-[16px] tracking-heading">{title}</span>
+      <span className="font-display font-medium text-[16px] tracking-heading">{title}</span>
       {text && <span className="text-[13px] leading-relaxed text-slate-700">{text}</span>}
       {children}
     </Wrapper>
@@ -96,7 +96,7 @@ export default function MeetingsSection({
 
       <div>
         <div className="flex items-baseline gap-3 mb-4">
-          <h2 className="font-display font-bold text-[18px] tracking-heading">À venir</h2>
+          <h2 className="font-display font-medium text-[18px] tracking-heading">À venir</h2>
           <p className="text-[13px] text-slate-500">
             {meetings.length === 0 ? 'aucune' : `${meetings.length} réunion${meetings.length > 1 ? 's' : ''}`}
           </p>
@@ -124,10 +124,10 @@ export default function MeetingsSection({
                 >
                   <div className="flex items-center gap-5">
                     <div className="flex-none w-16 text-center">
-                      <p className="text-[11px] font-semibold tracking-overline uppercase text-slate-500">
+                      <p className="text-[11px] font-semibold text-slate-500">
                         {badge.month}
                       </p>
-                      <p className="font-display font-bold text-[26px] tracking-heading">{badge.day}</p>
+                      <p className="font-display font-medium text-[28px] tracking-heading">{badge.day}</p>
                     </div>
                     <span className="hidden sm:block flex-none w-px h-11 bg-slate-200" />
                   </div>
@@ -136,7 +136,7 @@ export default function MeetingsSection({
                     <div className="flex items-center gap-2.5">
                       <h3 className="text-[15px] font-medium truncate">{meeting.title}</h3>
                       {isLive && (
-                        <span className="flex-none flex items-center gap-1.5 font-mono text-[10px] font-bold tracking-overline uppercase text-success-500 bg-success-50 rounded-xs px-2 py-1">
+                        <span className="flex-none flex items-center gap-1.5 font-mono text-[11px] font-medium text-success-500 bg-success-50 rounded-xs px-2 py-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-success-500" />
                           En cours
                         </span>
@@ -164,7 +164,7 @@ export default function MeetingsSection({
                         />
                       ))}
                       {people.length > 3 && (
-                        <span className="-mr-2 w-8 h-8 rounded-full border-2 border-surface bg-slate-100 text-slate-700 font-mono text-[10px] font-bold flex items-center justify-center">
+                        <span className="-mr-2 w-8 h-8 rounded-full border-2 border-surface bg-slate-100 text-slate-700 font-mono text-[11px] font-medium flex items-center justify-center">
                           +{people.length - 3}
                         </span>
                       )}

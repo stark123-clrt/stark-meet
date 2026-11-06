@@ -314,7 +314,7 @@ export default function DashboardPage() {
           <button
             key={key}
             onClick={() => { setSection(key); setMobileNavOpen(false); }}
-            className={`flex items-center gap-3 h-[42px] px-3 rounded-md text-[14px] font-medium text-left transition-colors duration-150 ease-standard ${
+            className={`flex items-center gap-3 h-10 px-3 rounded-md text-[14px] font-medium text-left transition-colors duration-150 ease-standard ${
               active ? 'bg-brand-50 text-brand-500' : 'text-slate-700 hover:bg-slate-100 hover:text-slate-950'
             }`}
           >
@@ -356,7 +356,7 @@ export default function DashboardPage() {
               <path d="M22 8.6a1 1 0 0 0-1.5-.9L17 9.8V8a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-1.8l3.5 2.1a1 1 0 0 0 1.5-.9V8.6Z" />
             </svg>
           </span>
-          <span className="font-display font-bold text-[18px] tracking-heading">Stark Meet</span>
+          <span className="font-display font-medium text-[18px] tracking-heading">Stark Meet</span>
         </Link>
         {navList}
         {identity}
@@ -368,7 +368,7 @@ export default function DashboardPage() {
           <div className="fixed inset-0 z-30 bg-slate-950/40 lg:hidden" onClick={() => setMobileNavOpen(false)} />
           <aside className="fixed inset-y-0 left-0 z-40 w-64 flex flex-col bg-surface border-r border-slate-200 lg:hidden">
             <div className="flex items-center justify-between h-[68px] px-5 border-b border-slate-200">
-              <span className="font-display font-bold text-[18px] tracking-heading">Stark Meet</span>
+              <span className="font-display font-medium text-[18px] tracking-heading">Stark Meet</span>
               <button onClick={() => setMobileNavOpen(false)} className="p-1.5 text-slate-500 hover:text-slate-950">
                 <X className="h-4 w-4" />
               </button>
@@ -390,7 +390,7 @@ export default function DashboardPage() {
             <Menu className="h-5 w-5" />
           </button>
 
-          <h1 className="font-display font-bold text-[20px] sm:text-[22px] tracking-heading truncate">
+          <h1 className="font-display font-medium text-[20px] sm:text-[24px] tracking-heading truncate">
             {current.title}
           </h1>
 
@@ -466,7 +466,7 @@ export default function DashboardPage() {
       {pendingDelete && (
         <div className="fixed inset-0 bg-slate-950/40 flex items-center justify-center p-4 z-50">
           <div className="bg-surface rounded-lg shadow-overlay max-w-md w-full border border-slate-200 p-6">
-            <h3 className="font-display font-bold text-[17px] tracking-heading">Supprimer cette réunion ?</h3>
+            <h3 className="font-display font-medium text-[18px] tracking-heading">Supprimer cette réunion ?</h3>
             <p className="mt-2 text-[14px] text-slate-700">
               <span className="font-medium text-slate-950">{pendingDelete.title}</span>{' '}
               <span className="font-mono text-[12px] text-slate-500">({pendingDelete.meeting_code})</span>

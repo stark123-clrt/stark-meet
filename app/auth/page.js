@@ -21,7 +21,7 @@ export default function AuthPage() {
                 <path d="M22 8.6a1 1 0 0 0-1.5-.9L17 9.8V8a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-1.8l3.5 2.1a1 1 0 0 0 1.5-.9V8.6Z" />
               </svg>
             </span>
-            <span className="font-display font-bold text-[18px] tracking-heading">Stark Meet</span>
+            <span className="font-display font-medium text-[18px] tracking-heading">Stark Meet</span>
           </Link>
         </div>
       </header>

@@ -463,7 +463,7 @@ export default function RoomPage() {
     return (
       <div className="min-h-viewport bg-canvas flex items-center justify-center p-4">
         <div className="w-full max-w-[420px] bg-surface border border-slate-200 rounded-lg p-8">
-          <h1 className="font-display font-bold text-[22px] tracking-heading">
+          <h1 className="font-display font-medium text-[24px] tracking-heading">
             Rejoindre « {meeting?.title} »
           </h1>
           <p className="mt-1.5 text-[14px] text-slate-700">
@@ -583,7 +583,7 @@ function CenteredNotice({ icon: Icon, title, text }) {
         <span className="w-14 h-14 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center mx-auto mb-6">
           <Icon className="h-6 w-6" />
         </span>
-        <p className="font-display font-bold text-[20px] tracking-heading">{title}</p>
+        <p className="font-display font-medium text-[20px] tracking-heading">{title}</p>
         <p className="mt-2 text-[14px] leading-relaxed text-slate-700">{text}</p>
         <Link
           href="/"

@@ -3,7 +3,7 @@
 import { initialsOf, avatarColorFor } from '@/lib/identity';
 
 const SIZES = {
-  sm: 'w-8 h-8 text-[10px]',
+  sm: 'w-8 h-8 text-[11px]',
   md: 'w-10 h-10 text-[12px]',
   lg: 'w-12 h-12 text-[14px]',
 };
@@ -20,7 +20,7 @@ export default function Avatar({ name, seed, size = 'md', className = '', ring =
 
   return (
     <span
-      className={`${SIZES[size]} rounded-full font-mono font-bold flex items-center justify-center flex-none ${
+      className={`${SIZES[size]} rounded-full font-mono font-medium flex items-center justify-center flex-none ${
         ring ? 'border-2 border-surface' : ''
       } ${className}`}
       style={{ background: color.bg, color: color.fg }}
