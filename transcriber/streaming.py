@@ -297,6 +297,13 @@ def load_recognizer():
     if lexique:
         started = time.perf_counter()
         fichier, LEXIQUE_ENTREES = _lexique_avec_extras(lexique)
+        if LEXIQUE_ENTREES == 0:
+            # Un lexique vide n'apporterait rien et couperait quand même les
+            # mots prioritaires par flux : on fait comme s'il n'existait pas.
+            log.warning("Lexique vide ignoré : %s", lexique)
+            lexique = None
+
+    if lexique:
         try:
             RECOGNIZER = sherpa_onnx.OnlineRecognizer.from_transducer(
                 **base, **bpe, hotwords_file=fichier, hotwords_score=LEXIQUE_SCORE,
