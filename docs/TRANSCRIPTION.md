@@ -213,6 +213,16 @@ docker run -d --name stark-transcriber --restart unless-stopped \
 Côté Coolify, sur la ressource mediasoup : `TRANSCRIPTION_ENABLED=true` et
 `TRANSCRIBER_PORT=8077`.
 
+**Modèle affiné maison et lexique.** Le modèle réentraîné sur Kaggle (Emilia,
+VoxPopuli, Common Voice) s'exporte avec la cellule `cellule_export_sherpa.py` du
+notebook de test. Son dossier contient `encoder/decoder/joiner.int8.onnx`,
+`tokens.txt`, `bpe.vocab` et `lexique.txt` (le dictionnaire français). Il suffit
+de le poser dans le volume et de pointer `SHERPA_MODEL_DIR` dessus, par exemple
+`-e SHERPA_MODEL_DIR=/models/stark-fr`. Le lexique est détecté seul
+(`SHERPA_LEXIQUE=auto`, score `SHERPA_LEXIQUE_SCORE=0.5`) ; `SHERPA_LEXIQUE=non`
+le désactive. Revenir à l'ancien modèle = remettre l'ancien `SHERPA_MODEL_DIR`.
+`/health` indique dans `lexique` s'il est actif et combien d'entrées il compte.
+
 **Le diagnostic tient en une commande :**
 
 ```bash

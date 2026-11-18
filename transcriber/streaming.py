@@ -73,6 +73,30 @@ MAX_ACTIVE_PATHS = int(os.environ.get("SHERPA_BEAM", "4"))
 HOTWORDS_SCORE = float(os.environ.get("HOTWORDS_SCORE", "1.5"))
 HOTWORDS_EXTRA = os.environ.get("HOTWORDS", "")
 
+# Lexique : le dictionnaire français complet, utilisé comme contrainte de
+# vocabulaire pendant la recherche par faisceau (graphe de contexte).
+#
+# Mesuré sur une réunion réelle, référence Meta (cellule de test Kaggle) :
+# sans contrainte WER 0,359 · 24 termes ciblés 0,369 (ça dégrade) ·
+# dictionnaire complet 0,350. Ce n'est pas un biais de domaine : les erreurs du
+# modèle produisent souvent des NON-MOTS (« BARAMETRE », « PRENDSAIS »), qui ne
+# reçoivent aucun bonus, si bien que le décodage est poussé vers du vrai français.
+#
+# « auto » : `lexique.txt` du dossier du modèle s'il existe · « non » : désactivé ·
+# sinon un chemin. Le score s'applique par jeton, comme `SCORE` dans la cellule
+# de test.
+#
+# ⚠️ Avec un lexique, plus de mots prioritaires PAR FLUX (le nom du locuteur) :
+# sherpa-onnx reconstruirait alors le graphe entier — des centaines de milliers
+# de mots — à chaque ouverture de flux. Le graphe est construit UNE fois au
+# démarrage et partagé par tous les flux. `HOTWORDS` reste pris en compte : ses
+# mots sont ajoutés au lexique avec leur propre score.
+LEXIQUE = os.environ.get("SHERPA_LEXIQUE", "auto")
+LEXIQUE_SCORE = float(os.environ.get("SHERPA_LEXIQUE_SCORE", "0.5"))
+LEXIQUE_ACTIF = False
+LEXIQUE_FICHIER = None
+LEXIQUE_ENTREES = 0
+
 # Endpointing du transducteur. Ces trois règles remplacent le seuil de silence
 # du VAD : la première clôt sur un long silence, la deuxième sur un silence plus
 # court APRÈS avoir décodé quelque chose, la troisième borne les monologues.
@@ -225,7 +249,7 @@ def load_recognizer():
     locuteurs — contrairement à Whisper, où chaque processus du pool portait sa
     propre copie de 750 Mio.
     """
-    global RECOGNIZER
+    global RECOGNIZER, LEXIQUE_ACTIF, LEXIQUE_FICHIER, LEXIQUE_ENTREES
     import sherpa_onnx
 
     directory = MODEL_DIR
@@ -241,7 +265,7 @@ def load_recognizer():
                 return str(match)
         return str(matches[0])
 
-    RECOGNIZER = sherpa_onnx.OnlineRecognizer.from_transducer(
+    base = dict(
         tokens=os.path.join(directory, "tokens.txt"),
         encoder=find("encoder*.onnx"),
         decoder=find("decoder*.onnx"),
@@ -251,16 +275,102 @@ def load_recognizer():
         feature_dim=80,
         decoding_method=DECODING,
         max_active_paths=MAX_ACTIVE_PATHS,
-        hotwords_score=HOTWORDS_SCORE,
         enable_endpoint_detection=True,
         rule1_min_trailing_silence=RULE1_SILENCE,
         rule2_min_trailing_silence=RULE2_SILENCE,
         rule3_min_utterance_length=RULE3_MAX_FRAMES,
     )
+
+    # Sans `bpe.vocab`, sherpa-onnx ne sait pas découper un mot prioritaire en
+    # jetons BPE : le lexique est alors impossible, et les mots par flux aussi.
+    vocab = os.path.join(directory, "bpe.vocab")
+    bpe = dict(modeling_unit="bpe", bpe_vocab=vocab) if os.path.isfile(vocab) else {}
+
+    lexique = _lexique_path()
+    if lexique and DECODING != "modified_beam_search":
+        log.warning("Lexique ignoré : il exige SHERPA_DECODING=modified_beam_search")
+        lexique = None
+    if lexique and not bpe:
+        log.warning("Lexique ignoré : bpe.vocab absent de %s", directory)
+        lexique = None
+
+    if lexique:
+        started = time.perf_counter()
+        fichier, LEXIQUE_ENTREES = _lexique_avec_extras(lexique)
+        try:
+            RECOGNIZER = sherpa_onnx.OnlineRecognizer.from_transducer(
+                **base, **bpe, hotwords_file=fichier, hotwords_score=LEXIQUE_SCORE,
+            )
+            LEXIQUE_ACTIF = True
+            LEXIQUE_FICHIER = lexique
+            log.info(
+                "Lexique chargé · %s · %d entrées · score %.2f · %.1f s "
+                "(mots prioritaires par flux désactivés)",
+                lexique, LEXIQUE_ENTREES, LEXIQUE_SCORE, time.perf_counter() - started,
+            )
+        except TypeError as error:
+            # sherpa-onnx trop ancien pour `modeling_unit` / `bpe_vocab`.
+            log.warning("Lexique non pris en charge par cette version : %s", error)
+            LEXIQUE_ENTREES = 0
+
+    if not LEXIQUE_ACTIF:
+        try:
+            RECOGNIZER = sherpa_onnx.OnlineRecognizer.from_transducer(
+                **base, **bpe, hotwords_score=HOTWORDS_SCORE,
+            )
+        except TypeError:
+            RECOGNIZER = sherpa_onnx.OnlineRecognizer.from_transducer(
+                **base, hotwords_score=HOTWORDS_SCORE,
+            )
+
     log.info(
-        "Modèle chargé · %s · %d threads · %s · faisceau %d",
+        "Modèle chargé · %s · %d threads · %s · faisceau %d · lexique %s",
         directory, NUM_THREADS, DECODING, MAX_ACTIVE_PATHS,
+        "oui" if LEXIQUE_ACTIF else "non",
     )
+
+
+def _lexique_path() -> str | None:
+    """Résout SHERPA_LEXIQUE : un fichier existant, ou None."""
+    value = LEXIQUE.strip()
+    if value.lower() in ("", "non", "none", "false", "0"):
+        return None
+    if value.lower() == "auto":
+        path = os.path.join(MODEL_DIR, "lexique.txt")
+        return path if os.path.isfile(path) else None
+    if not os.path.isfile(value):
+        log.warning("Lexique introuvable : %s — démarrage sans lexique", value)
+        return None
+    return value
+
+
+def _lexique_avec_extras(path: str) -> tuple[str, int]:
+    """
+    Renvoie le fichier à donner à sherpa-onnx et son nombre d'entrées.
+
+    Les mots de `HOTWORDS` (séparés par « / ») y sont ajoutés avec leur propre
+    score, `HOTWORDS_SCORE` : ce sont des termes que l'on veut vraiment favoriser,
+    pas une simple contrainte de vocabulaire. Le format sherpa-onnx place le score
+    en dernier élément de la ligne, après « : ».
+    """
+    with open(path, encoding="utf-8") as handle:
+        entries = sum(1 for line in handle if line.strip())
+
+    extras = [w.strip().upper() for w in HOTWORDS_EXTRA.replace("\n", "/").split("/")]
+    extras = [w for w in extras if w and ":" not in w]
+    if not extras:
+        return path, entries
+
+    import tempfile
+
+    merged = os.path.join(tempfile.gettempdir(), "stark-lexique.txt")
+    with open(path, encoding="utf-8") as source, open(merged, "w", encoding="utf-8") as out:
+        for line in source:
+            if line.strip():
+                out.write(line if line.endswith("\n") else line + "\n")
+        for word in extras:
+            out.write(f"{word} :{HOTWORDS_SCORE}\n")
+    return merged, entries + len(extras)
 
 
 _vad_warned = False
@@ -311,8 +421,14 @@ def make_stream(speaker_name: str):
 
     L'API des mots prioritaires varie selon les versions de sherpa-onnx, d'où le
     repli sur un flux ordinaire plutôt qu'un échec de session.
+
+    Avec un lexique, le flux reprend simplement le graphe partagé : des mots par
+    flux forceraient sherpa-onnx à reconstruire le lexique entier ici.
     """
     global _hotwords_warned
+
+    if LEXIQUE_ACTIF:
+        return RECOGNIZER.create_stream()
 
     words = [w for w in [speaker_name, HOTWORDS_EXTRA] if w and w.strip()]
     if not words or DECODING != "modified_beam_search":
@@ -777,6 +893,12 @@ async def health() -> dict:
             "model": VAD_MODEL,
             "threshold": VAD_THRESHOLD,
             "holdSeconds": VAD_HOLD_S,
+        },
+        "lexique": {
+            "actif": LEXIQUE_ACTIF,
+            "fichier": LEXIQUE_FICHIER,
+            "entrees": LEXIQUE_ENTREES,
+            "score": LEXIQUE_SCORE,
         },
         "activeSessions": len(SESSIONS),
         "sessions": [
