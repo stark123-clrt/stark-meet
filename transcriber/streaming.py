@@ -50,18 +50,7 @@ log = logging.getLogger("streaming")
 
 # ── Réglages ────────────────────────────────────────────────────────────────
 
-# Moteur de reconnaissance : `sherpa` en local, `meta` via l'API distante.
-#
-# Les deux cohabitent dans le service, et toute la chaîne amont leur est
-# commune — seul le dernier étage change de destination. Le repli tient donc
-# dans une variable, sans reconstruire l'image : si l'API tombe, coûte trop
-# cher ou déçoit, on revient au modèle local en trente secondes.
-ASR_ENGINE = os.environ.get("ASR_ENGINE", "sherpa").lower()
-
-# Délai laissé au service distant pour rendre sa dernière phrase avant qu'on ne
-# ferme la connexion. Sans lui, la fin de chaque prise de parole serait coupée.
-META_DRAIN_S = float(os.environ.get("META_DRAIN_S", "1.5"))
-
+# Moteur unique : sherpa-onnx, en local. L'audio ne quitte jamais la machine.
 MODEL_DIR = os.environ.get("SHERPA_MODEL_DIR", "/models/sherpa-fr")
 NUM_THREADS = int(os.environ.get("SHERPA_THREADS", "2"))
 
@@ -167,99 +156,6 @@ PARTIAL_INTERVAL_S = float(os.environ.get("PARTIAL_INTERVAL_S", "0.25"))
 
 DUMP_WAV_DIR = os.environ.get("DUMP_WAV_DIR", "")
 
-# ── Correction par LLM — architecture à deux vitesses ───────────────────────
-#
-# Vitesse 1 : l'hypothèse part telle qu'entendue, sans aucun traitement.
-# Vitesse 2 : la phrase confirmée est corrigée en tâche de fond pendant que le
-#             transducteur écoute déjà la suivante.
-#
-# ⚠️ La règle absolue est qu'aucun appel au LLM ne doit être attendu sur le
-# chemin de l'audio. Un LLM met plusieurs secondes ; pendant ce temps les paquets
-# RTP s'accumuleraient et le décalage deviendrait irrattrapable.
-
-LLM_ENABLED = os.environ.get("LLM_ENABLED", "false").lower() == "true"
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
-
-# Délai de garde. Au-delà, on publie le texte brut : une panne du correcteur ne
-# doit jamais rendre la transcription muette.
-#
-# 25 s et non 8 : mesuré sur ce VPS, une correction demande cinq à sept secondes,
-# auxquelles s'ajoute l'attente derrière la précédente. À 8 s, la majorité des
-# corrections étaient abandonnées juste avant d'aboutir.
-LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "25.0"))
-
-# Corrections simultanées, toutes sessions confondues. Sans cette borne, trois
-# locuteurs terminant leurs phrases en même temps lanceraient trois générations
-# concurrentes, qui disputeraient leurs cœurs à la reconnaissance elle-même.
-LLM_MAX_CONCURRENT = int(os.environ.get("LLM_MAX_CONCURRENT", "1"))
-
-# Nombre de jetons produits au maximum. Une correction fait la longueur de son
-# entrée ; au-delà, c'est que le modèle a commencé à bavarder malgré la consigne.
-LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "256"))
-
-# La consigne insiste sur ce que le modèle fait spontanément de travers.
-#
-# Observé en production : « Quant à un nombre de fois » rendu « Quant à une
-# certaine quantité de fois ». La cause est que l'endpointing découpe la parole
-# en segments souvent INCOMPLETS, et qu'un modèle à qui l'on demande de corriger
-# un fragment cherche naturellement à le rendre sensé. D'où la consigne explicite
-# de laisser les phrases inachevées telles quelles, et de ne changer aucun mot
-# qui s'écrit déjà correctement.
-LLM_PROMPT = os.environ.get(
-    "LLM_PROMPT",
-    "Tu corriges une transcription vocale française. Ajoute uniquement les "
-    "accents, la ponctuation et les majuscules manquants, et corrige les fautes "
-    "d'orthographe. Ne remplace JAMAIS un mot par un synonyme. Ne complète pas "
-    "les phrases inachevées : laisse-les inachevées. Ne rajoute aucun commentaire. "
-    'Renvoie uniquement le texte corrigé. Texte : "{raw_text}"',
-)
-
-# Publier le texte brut immédiatement, puis le remplacer par la version corrigée.
-#
-# Activé par défaut, et c'est ce qui rend la lenteur du LLM sans conséquence : la
-# phrase s'affiche à l'instant où elle se termine, la correction ne fait que la
-# remplacer ensuite. Sans ça, une correction de trois secondes laisserait l'écran
-# vide pendant trois secondes.
-#
-# Le remplacement se fait par `segmentId`, côté serveur et côté navigateur.
-LLM_RAW_FIRST = os.environ.get("LLM_RAW_FIRST", "true").lower() == "true"
-
-# Part maximale de mots modifiés qu'on accepte d'une correction.
-#
-# Volontairement PERMISSIF. Corriger une erreur phonétique consiste par nature à
-# remplacer un mot — « développée » par « développeur », « gaboné » par
-# « gabonais » —, et c'est même tout l'intérêt d'un LLM ici : il dispose du
-# contexte que le modèle acoustique n'a pas. Un seuil serré bloquait donc
-# exactement ce qu'on cherchait à obtenir (mesuré : une correction sur deux
-# écartée à 0,34).
-#
-# Ce seuil ne sert plus qu'à écarter une réécriture intégrale. Mettre 1.0 le
-# désactive complètement.
-LLM_MAX_CHANGE_RATIO = float(os.environ.get("LLM_MAX_CHANGE_RATIO", "0.7"))
-
-# Écart de longueur toléré, en nombre de mots. C'est LE vrai risque : un modèle
-# qui complète une phrase inachevée ou qui ajoute une formule de politesse
-# invente du contenu que personne n'a dit. Remplacer un mot est une correction ;
-# en ajouter cinq est une fabrication.
-LLM_MAX_LENGTH_RATIO = float(os.environ.get("LLM_MAX_LENGTH_RATIO", "0.35"))
-
-# Corrections en attente au-delà desquelles on cesse d'en demander.
-#
-# ⚠️ Sans cette borne, une file sans fin se formerait dès que le LLM est plus lent
-# que la parole : mesuré sur ce VPS, 60 s par correction contre une phrase toutes
-# les 5 s. Les tâches s'accumuleraient jusqu'à épuiser la mémoire, en corrigeant
-# des phrases vieilles de plusieurs minutes. Mieux vaut sauter des corrections que
-# prendre un retard irrattrapable.
-LLM_MAX_PENDING = int(os.environ.get("LLM_MAX_PENDING", "2"))
-
-llm_stats = {
-    "corrected": 0, "failed": 0, "timeouts": 0, "rejected": 0, "skipped": 0,
-    "pending": 0, "totalSeconds": 0.0,
-}
-_http_session = None
-_llm_semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENT)
-
 
 # ── Dépaquetage RTP ─────────────────────────────────────────────────────────
 
@@ -324,26 +220,12 @@ def load_recognizer():
     """
     Charge le transducteur une fois pour tout le processus.
 
-    Sans objet avec le moteur Meta, où le calcul est distant : on ne charge
-    alors aucun modèle et le service démarre en quelques secondes.
-
     sherpa-onnx est prévu pour ça : un moteur, plusieurs flux indépendants. Le
     modèle n'est donc en mémoire qu'une fois, quel que soit le nombre de
     locuteurs — contrairement à Whisper, où chaque processus du pool portait sa
     propre copie de 750 Mio.
     """
     global RECOGNIZER
-    if ASR_ENGINE == "meta":
-        import meta_asr
-
-        if not meta_asr.available():
-            log.warning("META_API_KEY absente — aucune transcription ne sera produite")
-        log.info(
-            "Moteur Meta · %s · mode %s · partiels %s · langue %s",
-            meta_asr.MODEL, meta_asr.MODE, meta_asr.PARTIAL_MODE, meta_asr.LANGUAGE,
-        )
-        return
-
     import sherpa_onnx
 
     directory = MODEL_DIR
@@ -458,8 +340,7 @@ def prettify(text: str, sentence: bool = False) -> str:
 
     Majuscule initiale et point final s'en déduisent sans rien calculer. Reste
     la ponctuation interne, les virgules, qui demanderait un vrai modèle : c'est
-    la part la moins utile à la lecture, et la moins gênante pour le LLM du
-    compte-rendu.
+    la part la moins utile à la lecture.
 
     `sentence=True` marque une phrase confirmée ; une hypothèse en cours ne doit
     pas recevoir de point, elle n'est pas finie.
@@ -536,10 +417,7 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
     # introduirait une discontinuité à chaque frontière de trame.
     resampler = soxr.ResampleStream(OPUS_RATE, TARGET_RATE, 1, dtype="float32")
 
-    # Les deux moteurs sont créés plus bas, une fois `emit` défini : la session
-    # Meta démarre un fil de réception qui peut rappeler `emit` immédiatement.
-    stream = None
-    meta = None
+    stream = make_stream(session.speaker_name)
 
     pending: dict[int, tuple[int, bytes]] = {}
     expected_seq: int | None = None
@@ -592,9 +470,7 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
             "participantId": session.participant_id,
             "displayName": session.speaker_name,
             # Instant de prononciation : c'est la clé de tri qui remet les
-            # locuteurs dans l'ordre. Elle est fixée ICI, avant toute correction,
-            # pour qu'un passage par le LLM ne déplace jamais une phrase dans le
-            # fil de la conversation.
+            # locuteurs dans l'ordre dans le fil de la conversation.
             "spokenAt": round(time.time(), 3),
             "segmentId": f"{session.producer_id}-{session.finals}",
         }
@@ -625,13 +501,8 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
 
     def emit(kind: str, text: str) -> None:
         """
-        Filtre et publie une sortie de moteur, quelle que soit sa provenance.
-
-        Partagé entre les deux moteurs : le seuil de mots, la limitation de
-        cadence des hypothèses et le comptage se comportent donc exactement
-        pareil en local et via l'API. Appelé depuis le fil de travail pour
-        sherpa, depuis le fil de réception pour Meta — `publish` traverse la
-        frontière de threads de façon sûre.
+        Filtre et publie une sortie du moteur : seuil de mots pour les phrases
+        confirmées, limitation de cadence pour les hypothèses.
         """
         nonlocal last_text, last_sent
 
@@ -664,11 +535,6 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
         # Le détecteur observe le même audio, en parallèle et sans le retenir.
         watch_voice(samples)
         session.audio_seconds += len(samples) / TARGET_RATE
-
-        if meta is not None:
-            # Envoi seul : le texte reviendra plus tard sur le fil de réception.
-            meta.feed(samples)
-            return
 
         started = time.perf_counter()
         stream.accept_waveform(TARGET_RATE, samples)
@@ -756,24 +622,6 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
             last_ts = (last_ts + FRAME_SAMPLES_20MS) & 0xFFFFFFFF
         decode_frame(payload)
 
-    # ── Ouverture du moteur ─────────────────────────────────────────────────
-    # Ici et pas plus haut : la session Meta lance un fil de réception qui peut
-    # rappeler `emit` dès la première réponse, et `emit` doit donc exister.
-    if ASR_ENGINE == "meta":
-        import meta_asr
-
-        meta = meta_asr.MetaSession(
-            speaker_name=session.speaker_name,
-            # Le nom du locuteur en premier : c'est le mot que tout modèle
-            # écorche le plus, et mediasoup nous le donne à l'ouverture.
-            keywords=[session.speaker_name] + (HOTWORDS_EXTRA.split() if HOTWORDS_EXTRA else []),
-            on_partial=lambda text: emit("partial", text),
-            on_final=lambda text: emit("final", text),
-        )
-        meta.connect()
-    else:
-        stream = make_stream(session.speaker_name)
-
     while not session.stop.is_set():
         try:
             packet = session.packets.get(timeout=0.5)
@@ -814,17 +662,10 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
 
     # Fin de session : on laisse le moteur produire sa dernière phrase.
     try:
-        if meta is not None:
-            # Le service tient sa propre file : on lui laisse un instant pour
-            # renvoyer ce qu'il a en cours avant de couper la connexion, sinon
-            # la dernière phrase de la réunion serait perdue.
-            time.sleep(META_DRAIN_S)
-            meta.close()
-        elif stream is not None:
-            stream.input_finished()
-            while RECOGNIZER.is_ready(stream):
-                RECOGNIZER.decode_stream(stream)
-            emit("final", RECOGNIZER.get_result(stream))
+        stream.input_finished()
+        while RECOGNIZER.is_ready(stream):
+            RECOGNIZER.decode_stream(stream)
+        emit("final", RECOGNIZER.get_result(stream))
     except Exception as error:
         log.warning("Fin de flux · %s: %s", session.speaker_name, error)
 
@@ -841,174 +682,6 @@ def worker(session: Session, loop: asyncio.AbstractEventLoop, results: asyncio.Q
     )
 
 
-# ── Correction par LLM ──────────────────────────────────────────────────────
-
-
-def _words(text: str) -> list[str]:
-    """Mots comparables : sans accents, sans ponctuation, sans casse."""
-    import re
-    import unicodedata
-
-    text = unicodedata.normalize("NFD", text.lower())
-    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
-    return [word for word in re.split(r"[^a-z0-9]+", text) if word]
-
-
-def changed_too_much(raw: str, corrected: str) -> bool:
-    """
-    Vrai si la correction doit être écartée.
-
-    Deux critères, et leur asymétrie est délibérée :
-
-    · la LONGUEUR est surveillée de près. Un modèle qui ajoute des mots invente
-      du contenu — il complète une phrase inachevée, ajoute une formule de
-      politesse. C'est le seul risque vraiment inacceptable dans un compte-rendu.
-
-    · les SUBSTITUTIONS sont largement tolérées. Corriger une erreur phonétique,
-      c'est remplacer un mot ; l'interdire reviendrait à n'attendre du LLM que
-      des accents. Ce second seuil ne sert plus qu'à écarter une réécriture
-      complète, où le modèle aurait manifestement répondu à autre chose.
-
-    La comparaison ignore accents, ponctuation et casse — précisément ce que la
-    correction est censée ajouter.
-    """
-    reference = _words(raw)
-    hypothesis = _words(corrected)
-    if not reference:
-        return True
-
-    if abs(len(hypothesis) - len(reference)) > max(2, LLM_MAX_LENGTH_RATIO * len(reference)):
-        return True
-
-    # Levenshtein au mot, sur une seule ligne de travail : les phrases font
-    # quelques dizaines de mots, le coût est négligeable.
-    previous = list(range(len(hypothesis) + 1))
-    for i, ref_word in enumerate(reference, 1):
-        current = [i]
-        for j, hyp_word in enumerate(hypothesis, 1):
-            current.append(min(
-                previous[j] + 1,
-                current[j - 1] + 1,
-                previous[j - 1] + (0 if ref_word == hyp_word else 1),
-            ))
-        previous = current
-
-    return previous[-1] > max(1, LLM_MAX_CHANGE_RATIO * len(reference))
-
-
-async def correct_text(raw: str) -> str | None:
-    """
-    Fait corriger une phrase par Ollama. Renvoie None si ça échoue.
-
-    Aucune exception ne remonte : le correcteur est un agrément, pas une
-    dépendance. Ollama arrêté, modèle absent, machine saturée — dans tous les
-    cas on doit pouvoir publier le texte brut.
-    """
-    if not raw.strip() or _http_session is None:
-        return None
-
-    import aiohttp  # importé ici : la dépendance n'est requise que si LLM_ENABLED
-
-    started = time.perf_counter()
-    try:
-        async with _llm_semaphore:
-            async with _http_session.post(
-                OLLAMA_URL,
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": LLM_PROMPT.format(raw_text=raw),
-                    "stream": False,
-                    "options": {
-                        # Température nulle : on veut une correction déterministe,
-                        # pas une reformulation créative.
-                        "temperature": 0,
-                        "num_predict": LLM_MAX_TOKENS,
-                    },
-                },
-                timeout=aiohttp.ClientTimeout(total=LLM_TIMEOUT_S),
-            ) as response:
-                if response.status != 200:
-                    llm_stats["failed"] += 1
-                    log.warning("Ollama a répondu %s", response.status)
-                    return None
-                body = await response.json()
-    except asyncio.TimeoutError:
-        llm_stats["timeouts"] += 1
-        log.warning("Correction abandonnée après %.0f s", LLM_TIMEOUT_S)
-        return None
-    except Exception as error:
-        llm_stats["failed"] += 1
-        log.warning("Correction impossible : %s", error)
-        return None
-
-    text = (body.get("response") or "").strip()
-
-    # Nettoyage plutôt que rejet. Un petit modèle préfixe volontiers sa réponse
-    # — « Bien sûr, voici le texte corrigé : … » — malgré la consigne. Jeter la
-    # correction pour ça serait perdre du bon texte à cause d'une politesse.
-    #
-    # Le deux-points est un repère sûr ici : le texte brut sort d'un transducteur
-    # qui ne produit aucune ponctuation, un deux-points en tête de réponse ne peut
-    # donc venir que du modèle. On se limite aux 60 premiers caractères pour ne
-    # pas amputer une phrase qui en contiendrait un légitimement.
-    head = text[:60]
-    if ":" in head:
-        text = text[head.index(":") + 1 :].strip()
-
-    if text.startswith('"') and text.endswith('"'):
-        text = text[1:-1].strip()
-    if not text or len(text) > max(80, len(raw) * 3):
-        llm_stats["failed"] += 1
-        return None
-
-    # Le modèle a-t-il corrigé, ou reformulé ? Dans le doute, le texte brut est
-    # plus fidèle qu'une belle phrase qui dit autre chose.
-    if changed_too_much(raw, text):
-        llm_stats["rejected"] += 1
-        log.warning("Correction écartée (sens modifié)\n  brut     : %s\n  corrigé  : %s", raw, text)
-        return None
-
-    llm_stats["corrected"] += 1
-    llm_stats["totalSeconds"] += time.perf_counter() - started
-    return text
-
-
-async def send_final(websocket: WebSocket, payload: dict) -> None:
-    """
-    Publie une phrase confirmée, corrigée si le LLM y parvient.
-
-    Lancée par `asyncio.create_task` : elle s'exécute pendant que la boucle
-    d'ingestion continue de recevoir des paquets et que le transducteur écoute
-    déjà la phrase suivante.
-    """
-    raw = payload["text"]
-
-    if LLM_RAW_FIRST:
-        # La phrase s'affiche à l'instant où elle se termine ; la correction la
-        # remplacera par son `segmentId`.
-        await websocket.send_text(json.dumps({**payload, "corrected": False}))
-
-    llm_stats["pending"] += 1
-    try:
-        corrected = await correct_text(raw)
-    finally:
-        llm_stats["pending"] -= 1
-
-    # Rien de neuf à publier : le texte brut est déjà à l'écran.
-    if corrected is None and LLM_RAW_FIRST:
-        return
-
-    await websocket.send_text(json.dumps({
-        **payload,
-        "text": corrected or raw,
-        "corrected": corrected is not None,
-        # Le texte tel qu'entendu, conservé à côté du corrigé. C'est la seule
-        # trace de ce qui a réellement été prononcé : si le LLM se trompe, le
-        # compte-rendu et une relecture pourront toujours revenir à la source.
-        "rawText": raw,
-    }))
-
-
 # ── API ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="stark-streaming")
@@ -1016,27 +689,7 @@ app = FastAPI(title="stark-streaming")
 
 @app.on_event("startup")
 async def _startup() -> None:
-    global _http_session
     load_recognizer()
-
-    if LLM_ENABLED:
-        import aiohttp
-
-        # Une seule session HTTP réutilisée : en créer une par phrase gaspillerait
-        # une poignée de main TCP à chaque correction.
-        _http_session = aiohttp.ClientSession()
-        log.info(
-            "Correcteur actif · %s · %s · %d simultanée(s) · délai %.0f s",
-            OLLAMA_MODEL, OLLAMA_URL, LLM_MAX_CONCURRENT, LLM_TIMEOUT_S,
-        )
-    else:
-        log.info("Correcteur désactivé (LLM_ENABLED=false) — texte brut publié")
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    if _http_session is not None:
-        await _http_session.close()
 
 
 @app.websocket("/stream")
@@ -1071,41 +724,15 @@ async def stream_endpoint(websocket: WebSocket) -> None:
     thread = threading.Thread(target=worker, args=(session, loop, results), daemon=True)
     thread.start()
 
-    # Les tâches de correction sont retenues ici : une tâche sans référence peut
-    # être ramassée par le collecteur avant d'avoir abouti.
-    corrections: set[asyncio.Task] = set()
-
     async def sender() -> None:
         """
-        Sortie des résultats. C'est ICI que la correction est lancée, et nulle
-        part ailleurs.
-
-        La détection de fin de phrase a lieu dans le thread de travail, où
-        `asyncio.create_task` lèverait une exception faute de boucle. Le thread
-        dépose donc ses résultats dans cette file, et cette coroutine — seule en
-        contexte async — décide quoi en faire.
-
-        ⚠️ Aucun `await` sur le LLM ici : la correction part en tâche de fond et
-        la boucle repart immédiatement. C'est ce qui garantit que l'ingestion
-        audio ne se suspend jamais.
+        Sortie des résultats. Le thread de travail n'a pas de boucle asyncio : il
+        dépose hypothèses et phrases confirmées dans cette file, et cette
+        coroutine — seule en contexte async — les renvoie telles quelles.
         """
         while True:
             payload = await results.get()
-
-            if payload["type"] == "final" and LLM_ENABLED:
-                if llm_stats["pending"] >= LLM_MAX_PENDING:
-                    # Le correcteur est débordé : on publie brut sans l'engorger
-                    # davantage. Une phrase juste et non ponctuée vaut mieux
-                    # qu'une file qui s'allonge sans fin.
-                    llm_stats["skipped"] += 1
-                    await websocket.send_text(json.dumps({**payload, "corrected": False}))
-                    continue
-                task = asyncio.create_task(send_final(websocket, payload))
-                corrections.add(task)
-                task.add_done_callback(corrections.discard)
-            else:
-                # Hypothèses : publiées telles quelles, sans jamais attendre.
-                await websocket.send_text(json.dumps(payload))
+            await websocket.send_text(json.dumps(payload))
 
     sender_task = asyncio.create_task(sender())
 
@@ -1131,12 +758,6 @@ async def stream_endpoint(websocket: WebSocket) -> None:
         session.stop.set()
         session.packets.put(None)
         await asyncio.sleep(0.3)  # laisser la dernière phrase remonter
-
-        # Attendre les corrections en vol : les abandonner ferait perdre les
-        # dernières phrases de la réunion, celles-là même qu'on vient d'attendre.
-        if corrections:
-            await asyncio.wait(corrections, timeout=LLM_TIMEOUT_S + 2)
-
         sender_task.cancel()
         SESSIONS.pop(session.producer_id, None)
 
@@ -1145,11 +766,8 @@ async def stream_endpoint(websocket: WebSocket) -> None:
 async def health() -> dict:
     return {
         "status": "ok",
-        "engine": ASR_ENGINE,
-        "model": os.environ.get("META_MODEL", "muse-voice-transcribe-1.0") if ASR_ENGINE == "meta" else MODEL_DIR,
-        # Confirme que la clé est bien passée au conteneur, sans jamais en
-        # révéler la valeur.
-        "metaKeyConfigured": bool(os.environ.get("META_API_KEY")),
+        "engine": "sherpa-onnx",
+        "model": MODEL_DIR,
         "threads": NUM_THREADS,
         "decoding": DECODING,
         "maxActivePaths": MAX_ACTIVE_PATHS,
@@ -1161,15 +779,6 @@ async def health() -> dict:
             "holdSeconds": VAD_HOLD_S,
         },
         "activeSessions": len(SESSIONS),
-        "llm": {
-            "enabled": LLM_ENABLED,
-            "model": OLLAMA_MODEL if LLM_ENABLED else None,
-            "rawFirst": LLM_RAW_FIRST,
-            **llm_stats,
-            "averageSeconds": round(
-                llm_stats["totalSeconds"] / llm_stats["corrected"], 2
-            ) if llm_stats["corrected"] else 0,
-        },
         "sessions": [
             {
                 "speaker": s.speaker_name,

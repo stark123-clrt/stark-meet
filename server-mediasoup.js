@@ -24,9 +24,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const mediasoup = require('mediasoup');
-// Architecture v2 : DirectTransport + WebSocket vers un transducteur causal.
-// L'ancien module `transcription-fork.js` (PlainTransport UDP + ffmpeg +
-// Whisper) reste dans le dépôt à titre de repli, mais n'est plus chargé.
+// Architecture v2 : DirectTransport + WebSocket vers un transducteur causal
+// (sherpa-onnx, en local). Voir docs/TRANSCRIPTION.md.
 const transcription = require('./transcription-stream');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -63,7 +62,6 @@ app.get('/transcription/stats', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({
     ...transcription.getStats(),
-    callbackConfigured: !!process.env.TRANSCRIBER_SECRET,
     transcriptPersistence: !transcriptDb
       ? (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
         ? 'en échec (client Supabase impossible à créer, voir les logs)'
@@ -79,16 +77,11 @@ app.get('/transcription/stats', (req, res) => {
   });
 });
 
-app.use(express.json());
-
 // ============================================
 // TRANSCRIPTION — RETOUR DU SERVICE PYTHON
 // ============================================
-// Le service tourne en `--network host` et ne peut donc pas joindre ce
-// conteneur par son IP de bridge : il repasse par l'URL publique, à travers
-// Traefik. Cette route est donc exposée sur Internet, d'où le secret partagé —
-// sans lui, n'importe qui pourrait injecter du faux texte dans une réunion.
-const TRANSCRIBER_SECRET = process.env.TRANSCRIBER_SECRET || '';
+// Le texte revient par le WebSocket qui apporte l'audio (transcription-stream.js) :
+// aucune route n'est exposée pour le recevoir.
 
 // Historique conservé en mémoire pour qu'un participant qui rejoint en retard,
 // ou qui recharge sa page, retrouve ce qui a déjà été dit. Volontairement non
@@ -159,9 +152,8 @@ if (!transcriptDb && !(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)) {
 // produit plusieurs phrases par seconde ; autant d'allers-retours HTTP
 // ralentiraient le fil qui diffuse aussi le média.
 //
-// La file est indexée par `segmentId` : quand le LLM renvoie la version
-// corrigée d'une phrase encore en attente, elle REMPLACE la version brute et
-// une seule ligne part en base.
+// La file est indexée par `segmentId` : une phrase republiée sous le même
+// identifiant REMPLACE la précédente, et une seule ligne part en base.
 const TRANSCRIPT_FLUSH_MS = Number(process.env.TRANSCRIPT_FLUSH_MS) || 5000;
 
 // Délai au-delà duquel une écriture est abandonnée. Sans lui, une base
@@ -186,9 +178,8 @@ let persistenceDisabled = false;
 function queueSegment(meetingId, segment) {
   if (!transcriptDb || persistenceDisabled) return;
 
-  // Repli quand le transcripteur ne fournit pas de clé (transcripteur externe
-  // par la route HTTP) : sans identifiant stable, chaque phrase est sa propre
-  // ligne, ce qui reste correct — seul le remplacement par le LLM est perdu.
+  // Repli si le transcripteur ne fournit pas de clé : sans identifiant stable,
+  // chaque phrase est sa propre ligne, ce qui reste correct.
   const key = segment.segmentId
     || `${segment.participantId || 'anon'}-${segment.spokenAt}`;
 
@@ -207,8 +198,6 @@ function queueSegment(meetingId, segment) {
     participant_id: segment.participantId,
     display_name: segment.displayName,
     text: segment.text,
-    raw_text: segment.rawText,
-    corrected: segment.corrected,
     spoken_at: new Date(segment.spokenAt * 1000).toISOString(),
   });
 }
@@ -275,8 +264,7 @@ async function flushSegments(meetingId) {
       }
 
       // Remises en file, mais SANS écraser une version plus récente arrivée
-      // entre-temps : une correction du LLM prime toujours sur le texte brut
-      // qu'elle remplace. Et jamais au-delà du plafond, sinon un échec durable
+      // entre-temps. Et jamais au-delà du plafond, sinon un échec durable
       // ferait grossir le lot suivant à chaque tour.
       for (const row of rows) {
         if (queue.size >= TRANSCRIPT_QUEUE_MAX) break;
@@ -328,14 +316,12 @@ function transcriptStore(meetingId) {
 /**
  * Enregistre et rediffuse un fragment de transcription.
  *
- * Point d'entrée unique : le service de transcription renvoie désormais son
- * texte par le WebSocket qui lui apporte l'audio, mais la route HTTP est
- * conservée pour un transcripteur externe éventuel. Les deux passent par ici,
- * pour que le stockage, le tri et la diffusion restent définis à un seul
- * endroit.
+ * Point d'entrée unique, appelé pour chaque message que le service de
+ * transcription renvoie par le WebSocket qui lui apporte l'audio : le stockage,
+ * le tri et la diffusion restent définis à un seul endroit.
  */
 function recordTranscript({
-  meetingId, participantId, displayName, type, text, at, spokenAt, segmentId, corrected, rawText,
+  meetingId, participantId, displayName, type, text, at, spokenAt, segmentId,
 }) {
   if (!meetingId || !type || typeof text !== 'string') return false;
 
@@ -345,14 +331,9 @@ function recordTranscript({
     displayName: displayName || 'Participant',
     text,
     at: at || new Date().toISOString(),
-    // Identifiant stable d'une phrase. Le transcripteur publie d'abord le texte
-    // brut, puis le même segment corrigé par le LLM : c'est cette clé qui permet
-    // de remplacer la phrase au lieu de l'afficher deux fois.
+    // Identifiant stable d'une phrase : une republication sous la même clé
+    // remplace la phrase au lieu de l'afficher deux fois.
     segmentId: segmentId || null,
-    corrected: !!corrected,
-    // Texte tel qu'entendu, conservé quand le LLM a corrigé. Le compte-rendu
-    // pourra ainsi revenir à la source si une correction s'avère fautive.
-    rawText: rawText || null,
     // Instant de PRONONCIATION, fourni par le transcripteur. Sans lui, l'ordre
     // d'affichage serait celui de l'arrivée : deux locuteurs dont les flux
     // n'avancent pas au même rythme verraient une réponse s'afficher avant sa
@@ -362,8 +343,7 @@ function recordTranscript({
 
   if (type === 'final') {
     if (text.trim()) {
-      // Une phrase déjà publiée est REMPLACÉE, jamais dupliquée : c'est le cas
-      // du texte brut affiché immédiatement, puis corrigé par le LLM.
+      // Une phrase déjà publiée est REMPLACÉE, jamais dupliquée.
       const existing = segment.segmentId
         ? store.finals.findIndex((item) => item.segmentId === segment.segmentId)
         : -1;
@@ -398,20 +378,6 @@ function recordTranscript({
 
   return true;
 }
-
-// Conservée pour un transcripteur externe qui n'utiliserait pas le WebSocket.
-// Exposée sur Internet (le service tournait en `--network host` et repassait par
-// Traefik), d'où le secret partagé : sans lui, n'importe qui injecterait du faux
-// texte dans une réunion.
-app.post('/internal/transcript', (req, res) => {
-  if (!TRANSCRIBER_SECRET || req.get('X-Transcriber-Secret') !== TRANSCRIBER_SECRET) {
-    return res.status(403).json({ error: 'Secret invalide' });
-  }
-  if (!recordTranscript(req.body || {})) {
-    return res.status(400).json({ error: 'Paramètres manquants' });
-  }
-  res.json({ ok: true });
-});
 
 // ============================================
 // CONFIGURATION MEDIASOUP

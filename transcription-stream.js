@@ -1,7 +1,7 @@
 /**
  * Fork audio vers le service de transcription — architecture v2.
  *
- * Remplace `transcription-fork.js`, qui passait par un `PlainTransport` UDP,
+ * Remplace l'ancien `transcription-fork.js` (supprimé), qui passait par un `PlainTransport` UDP,
  * un fichier SDP et un ffmpeg externe. Ici :
  *
  *   DirectTransport → consumer.on('rtp') → WebSocket binaire → service Python

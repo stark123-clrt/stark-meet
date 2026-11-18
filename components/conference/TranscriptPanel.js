@@ -7,12 +7,12 @@ import { initialsOf } from '@/lib/identity';
 /**
  * Transcription en direct, sur deux niveaux de certitude.
  *
- * C'est le point important pour la lecture : Whisper réanalyse en continu, donc
- * son texte change encore quelques secondes après avoir été produit. Tout
- * afficher du même noir donnerait l'impression que le transcript se corrige
- * tout seul de façon erratique. On distingue donc :
+ * C'est le point important pour la lecture : l'hypothèse du transducteur change
+ * encore tant que la phrase n'est pas confirmée. Tout afficher du même noir
+ * donnerait l'impression que le transcript se corrige tout seul de façon
+ * erratique. On distingue donc :
  *
- *   · en NOIR ce que deux passes consécutives ont confirmé — définitif ;
+ *   · en NOIR les phrases confirmées par le transducteur — définitif ;
  *   · en GRIS ITALIQUE l'hypothèse en cours — susceptible de changer.
  *
  * L'hypothèse d'un locuteur reste sous ses phrases confirmées, jamais au

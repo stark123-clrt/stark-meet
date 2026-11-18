@@ -1,54 +1,38 @@
-# Service de transcription — Whisper local, hors du conteneur mediasoup
+# Service de transcription — sherpa-onnx en local, hors du conteneur mediasoup
 #
-# La même image sert aux deux usages, parce qu'ils doivent partager exactement
-# les mêmes versions de faster-whisper et CTranslate2 : mesurer le RTF avec une
-# pile différente de celle qui tourne en production ne prouverait rien.
+# Un seul moteur : le transducteur causal sherpa-onnx (architecture v2, voir
+# docs/TRANSCRIPTION.md). L'audio ne quitte jamais la machine.
+#
+# La même image sert aux deux usages, pour que la mesure se fasse avec
+# exactement la pile qui tourne en production :
 #
 #   · service (défaut) : docker run … stark-transcriber
-#   · mesure           : docker run … stark-transcriber python -u measure.py /audio
+#   · mesure           : docker run … stark-transcriber \
+#                          python -u bench_streaming.py --model /models/<modèle> /audio/reference.wav
 #
-# Lancement en production (host network : le service reçoit du RTP sur des ports
-# que mediasoup lui indique dynamiquement, un mappage figé ne peut pas suivre) :
-#
-#   docker run -d --name stark-transcriber --restart unless-stopped \
-#     --network host --cpuset-cpus=5-7 --memory=3g \
-#     -e NODE_CALLBACK_URL=https://<domaine-mediasoup> \
-#     -e TRANSCRIBER_SECRET=<le même secret que côté Node> \
-#     stark-transcriber
-#
-# Le `cpuset` est ce qui protège la visio : sans lui, Whisper disputerait ses
-# cœurs à mediasoup et l'audio se dégraderait pendant les transcriptions.
+# Lancement en production : voir docs/TRANSCRIPTION.md §6. Le `cpuset` est ce
+# qui protège la visio : sans lui, la reconnaissance disputerait ses cœurs à
+# mediasoup et l'audio se dégraderait pendant les transcriptions.
 
 FROM python:3.11-slim
 
-# ffmpeg décode le RTP Opus en PCM 16 kHz. libgomp1 est requis par CTranslate2
-# (le runtime de faster-whisper) pour son parallélisme OpenMP : absent de
-# l'image slim, et son absence ne se manifeste qu'à l'import, par une erreur de
-# bibliothèque partagée peu explicite.
-# libopus0 : décodage Opus en bibliothèque, sans sous-processus — c'est ce qui
-#   remplace ffmpeg dans l'architecture v2.
-# ffmpeg : conservé pour l'ancienne chaîne Whisper, encore utilisable en repli.
-# libgomp1 : requis par CTranslate2 et onnxruntime pour leur parallélisme OpenMP.
-#   Absent de l'image slim, et son absence ne se manifeste qu'à l'import, par une
-#   erreur de bibliothèque partagée peu explicite.
+# libopus0 : décodage Opus en bibliothèque, sans sous-processus.
+# libgomp1 : requis par onnxruntime pour son parallélisme OpenMP. Absent de
+#   l'image slim, et son absence ne se manifeste qu'à l'import, par une erreur
+#   de bibliothèque partagée peu explicite.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
     libgomp1 \
     libopus0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
-    faster-whisper \
     "fastapi>=0.110" \
     "uvicorn[standard]>=0.27" \
-    requests \
     numpy \
     onnxruntime \
     sherpa-onnx \
     opuslib \
-    soxr \
-    aiohttp \
-    websocket-client
+    soxr
 
 WORKDIR /app
 COPY transcriber/ ./
@@ -60,19 +44,9 @@ COPY transcriber/ ./
 ENV OMP_NUM_THREADS=2
 ENV MALLOC_ARENA_MAX=2
 
-# Modèle retenu après mesure : `small` en int8 donne RTF 0,399 sur cette
-# machine, pour une qualité proche de `turbo` à quatre fois moins de calcul.
-ENV WHISPER_MODEL=small
-ENV WHISPER_COMPUTE=int8
-
-# Langue forcée : la détection automatique coûte 0,6 à 1,9 s PAR PASSE — mesuré
-# sur le VPS — pour redécouvrir chaque fois la même réponse. La vider rétablit
-# la détection, nécessaire seulement en réunion réellement multilingue.
-ENV WHISPER_LANGUAGE=fr
-
-# Le modèle est téléchargé au premier démarrage puis mis en cache. Sans volume
-# monté sur ce chemin, chaque recréation du conteneur le retélécharge (~500 Mio).
-ENV HF_HOME=/models
+# Modèles sherpa-onnx et Silero, posés à la main dans ce volume
+# (SHERPA_MODEL_DIR, VAD_MODEL). Sans volume, ils disparaîtraient à chaque
+# recréation du conteneur.
 VOLUME ["/models"]
 
 # Port d'écoute, paramétrable : sur une machine qui héberge plusieurs dizaines
@@ -82,14 +56,9 @@ VOLUME ["/models"]
 ENV TRANSCRIBER_PORT=8000
 EXPOSE 8000
 
-# Application servie. `streaming:app` est l'architecture v2 (sherpa-onnx,
-# WebSocket) ; `service:app` reste l'ancienne chaîne Whisper, utilisable en repli
-# en surchargeant cette variable — les deux fichiers cohabitent dans l'image.
-ENV TRANSCRIBER_APP=streaming:app
-
-# Forme shell, indispensable pour que les variables soient interprétées : en
-# forme exec, elles seraient passées littéralement à uvicorn.
+# Forme shell, indispensable pour que la variable soit interprétée : en forme
+# exec, elle serait passée littéralement à uvicorn.
 #
 # `--network host` étant utilisé, uvicorn écoute directement sur le port de
 # l'hôte : le pare-feu du VPS doit le garder fermé à l'extérieur.
-CMD python -u -m uvicorn ${TRANSCRIBER_APP} --host 0.0.0.0 --port ${TRANSCRIBER_PORT}
+CMD python -u -m uvicorn streaming:app --host 0.0.0.0 --port ${TRANSCRIBER_PORT}

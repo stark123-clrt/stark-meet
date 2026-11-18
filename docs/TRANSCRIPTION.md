@@ -191,8 +191,7 @@ disparaissaient. Il n'y a plus de socket.
 Il n'y a plus de port.
 
 **La route publique.** `/internal/transcript` était exposée sur Internet et
-protégée par un secret partagé. Elle subsiste pour un transcripteur externe, mais
-n'est plus dans le chemin nominal.
+protégée par un secret partagé. Elle a été supprimée.
 
 ---
 
@@ -224,8 +223,11 @@ curl -s http://127.0.0.1:8077/health
 dépaquetage RTP erroné. `queued` qui monte signale que le CPU ne suit plus.
 `lostFrames` mesure la qualité du réseau. `rtf` doit rester bien sous 1.
 
-Repli possible vers l'ancienne chaîne Whisper sans reconstruire l'image :
-`-e TRANSCRIBER_APP=service:app`.
+Le service n'a qu'un moteur, sherpa-onnx en local. L'ancienne chaîne Whisper, le
+moteur distant Meta et le correcteur LLM (Ollama) ont été retirés du dépôt le
+18 novembre 2026 ; ils restent consultables dans l'historique git. Les variables
+`ASR_ENGINE`, `META_*`, `LLM_*`, `OLLAMA_*`, `TRANSCRIBER_APP` et
+`TRANSCRIBER_SECRET` ne servent plus et peuvent être retirées de la configuration.
 
 ---
 

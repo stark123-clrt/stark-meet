@@ -1,5 +1,10 @@
 # Module de transcription — architecture, mesures et problèmes ouverts
 
+> **Historique.** La chaîne Whisper décrite ici a été remplacée par l'architecture v2
+> (voir `TRANSCRIPTION.md`), et son code — `transcription-fork.js`,
+> `transcriber/service.py`, `transcriber/measure.py`, `transcriber/bench_window.py` —
+> a été retiré du dépôt le 18 novembre 2026. Il reste consultable dans l'historique git.
+
 Document de passation. Il décrit l'état réel du module de transcription en direct de
 **Stark Meet**, une application de visioconférence auto-hébergée. Il inclut les mesures
 faites en production, les conceptions qui ont échoué et pourquoi, ainsi que les questions
